@@ -1,0 +1,128 @@
+cat > /root/mount_var.sh <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# /dev/vdb is the unpartitioned 50G disk shown by lsblk.
+DISK=/dev/vdb
+VG=var
+LV=var
+DEV=/dev/$VG/$LV
+TMP_MOUNT=/mnt
+
+[ "$(id -u)" -eq 0 ] || { echo "ERROR: Run as root"; exit 1; }
+
+sync_var() {
+    local final_copy=$1 status
+
+    set +e
+    if [ "$final_copy" = "yes" ]; then
+        rsync -aHAXxP --delete /var/ "$TMP_MOUNT/"
+    else
+        rsync -aHAXxP /var/ "$TMP_MOUNT/"
+    fi
+    status=$?
+    set -e
+
+    if [ "$status" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$status" -eq 24 ] && [ "$final_copy" = "no" ]; then
+        echo "WARNING: Files changed during the first copy (rsync code 24)."
+        echo "Run the finalize phase from console after stopping services."
+        return 0
+    fi
+    echo "ERROR: rsync failed with code $status. Do not switch /var."
+    exit "$status"
+}
+
+prepare() {
+    [ -b "$DISK" ] || { echo "ERROR: $DISK not found"; exit 1; }
+    [ -d /var ] || { echo "ERROR: /var not found"; exit 1; }
+    [ ! -e /var.old ] || { echo "ERROR: /var.old already exists"; exit 1; }
+
+    # Create the LVM volume only on the first execution.
+    if ! vgs "$VG" >/dev/null 2>&1; then
+        pvcreate "$DISK"
+        vgcreate "$VG" "$DISK"
+        lvcreate -l +100%FREE -n "$LV" "$VG"
+        mkfs.ext4 "$DEV"
+    fi
+
+    lvs "$DEV" >/dev/null 2>&1 || { echo "ERROR: $DEV not found"; exit 1; }
+    mkdir -p "$TMP_MOUNT"
+    if ! mountpoint -q "$TMP_MOUNT"; then
+        mount "$DEV" "$TMP_MOUNT"
+    fi
+
+    sync_var no
+    sync
+    echo "PREPARE complete. Stop services and run: /root/mount_var.sh finalize"
+}
+
+finalize() {
+    [ -e /var.old ] && { echo "ERROR: /var.old already exists"; exit 1; }
+    mountpoint -q "$TMP_MOUNT" || { echo "ERROR: $TMP_MOUNT is not mounted"; exit 1; }
+
+    # Run this only after kubelet/container runtime and other writers are stopped.
+    sync_var yes
+    sync
+    umount "$TMP_MOUNT"
+
+    mv /var /var.old
+    mkdir -p /var
+    mount "$DEV" /var
+
+    # Same fstab format as the supplied guide; avoid adding a duplicate line.
+    grep -qE '^[^#]+[[:space:]]+/var[[:space:]]+' /etc/fstab || \
+        echo "$DEV   /var   ext4   defaults   0    0" | tee -a /etc/fstab
+
+    findmnt /var
+    df -hT /var
+    echo "SUCCESS: Reboot and verify /var before deleting /var.old."
+}
+
+case "${1:-}" in
+    prepare) prepare ;;
+    finalize) finalize ;;
+    *)
+        echo "Usage: $0 prepare | finalize"
+        exit 1
+        ;;
+esac
+EOF
+
+chmod +x /root/mount_var.sh
+
+# First phase: create/mount the new LVM volume and make the initial copy.
+/root/mount_var.sh prepare
+
+# ================================================================
+# NOTE - Steps to complete the /var migration
+#
+# 1. The command above runs only the PREPARE phase. It creates LVM
+#    (on the first run), mounts it temporarily at /mnt, and copies /var.
+#
+# 2. Before FINALIZE, drain the Kubernetes worker from the control plane:
+#    kubectl drain <worker-name> --ignore-daemonsets --delete-emptydir-data
+#
+# 3. Use the VM/physical console, then stop services that write to /var:
+#    systemctl stop kubelet
+#    systemctl stop containerd
+#
+# 4. Run the final phase. It performs the final rsync, mounts the new
+#    LVM ext4 filesystem at /var, and adds /etc/fstab:
+#    /root/mount_var.sh finalize
+#
+# 5. Reboot and verify that /var is mounted from /dev/var/var:
+#    reboot
+#    findmnt /var
+#    df -hT /var
+#
+# 6. Only after a successful reboot and service verification, remove
+#    the old /var data permanently:
+#    rm -rf --one-file-system -- /var.old
+#
+# IMPORTANT: For a server where the original script already stopped at
+# rsync code 24 and /dev/var/var is mounted at /mnt, use the separate
+# fix_mount_var.sh script instead of running this file again.
+# ================================================================

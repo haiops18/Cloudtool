@@ -1,0 +1,350 @@
+- Header for all API: 
+- Authorization: Token xxxxxxxxxxxx
+	(Với xxxxxxxxxxxx là chuỗi tocken mà người dùng có)
+- project-id: yyyyyyyyyyy
+	(Với yyyyyyyyyyy là project id mà người dùng đang chọn, và luôn truyền với mọi API)
+
+
+
+==== API get list Subnet ====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/subnets/?page=1&page_size=10
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 5,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "d4cf3098-181a-43ce-be13-4bc3eecea490",
+            "name": "CNTT_MONITOR_2",
+            "description": "Created by CMP",
+            "vpc": {
+                "id": "7f8a5d05-48ef-4e5e-93d8-1ee8906cd642",
+                "display_name": "CNTT_MONITOR_2 - 10.129.24.0/21",
+                "name": "CNTT_MONITOR_2"
+            },
+            "cidr": "10.129.24.0/21",
+            "region": "vn-north-1",
+            "owner": null,
+            "project": "fdad79fd-c4c7-413f-90a4-c057ab96e29f",
+            "created_at": "2026-01-06T09:22:22.443411Z",
+            "updated_at": "2026-01-06T09:22:22.443432Z",
+            "display_name": "CNTT_MONITOR_2 - 10.129.24.0/21"
+        }
+    ]
+}
+
+==== API get private IP with subnet IP ====
+- subnet_id=d4cf3098-181a-43ce-be13-4bc3eecea490
+- ip_address_search=10.129.25.168
+
+- method: GET
+- api_link: 
+https://console.viettelcloud.vn/legacy/api/infra/private-ips/?page=1&page_size=10&subnet_id=d4cf3098-181a-43ce-be13-4bc3eecea490&ip_address=10.129.25.168
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "7a5cf360-66c9-427f-88da-8306ac573775",
+            "description": "",
+            "subnet": "d4cf3098-181a-43ce-be13-4bc3eecea490",
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+            "device_owner": "user",
+            "region": "vn-north-1",
+            "project": "fef1e748-f1f3-4b1f-9b55-a564c9abe8f8",
+            "ip_address": "10.129.25.168",
+            "mac_address": "fa:16:3e:27:70:00",
+            "server": {
+                "id": "3f43bd15-cf54-4791-8c3d-7f485d26587d",
+                "name": "XHS-SBT-gateway-03",
+                "display_name": "XHS-SBT-gateway-03"
+            },
+            "created_at": "2026-07-28T04:38:48.100184Z",
+            "updated_at": "2026-07-29T02:47:58.639338Z",
+            "display_name": "10.129.25.168",
+            "vips": [],
+            "vpc_id": "7f8a5d05-48ef-4e5e-93d8-1ee8906cd642"
+        }
+    ]
+}
+- status code: 200 OK
+- description:
++ api link: bỏ "&ip_address=10.129.25.168" là sẽ get all ip_address
++ "description": "Port is created by Cloud services" => ip_address này không sử dụng được
++ "description": "", "server": null => ip_address này có thể dùng được
+
+==== API get list VPC ====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/vpcs/?page=1&page_size=10
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 8,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "b8720038-dde0-450c-b309-6fcd2d07e346",
+            "name": "VPC_test_ooo",
+            "description": "Test",
+            "cidr": "10.1.10.0/24",
+            "region": "e787f5f1-045b-4b2b-97a8-805d374be494",
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+            "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+            "shared_projects": [],
+            "created_at": "2026-08-25T06:40:29.747828Z",
+            "updated_at": "2026-08-25T06:40:40.132451Z",
+            "route_tables": [
+                "def0c638-5340-45a2-a393-9166aff91849"
+            ],
+            "internet_access": false,
+            "display_name": "VPC_test_ooo - 10.1.10.0/24"
+        }
+    ]
+}
+- status code: 200 OK
+
+==== API Create VPC ====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- region-id: e787f5f1-045b-4b2b-97a8-805d374be494
+
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/vpcs/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request payload:
+{
+    "cidr": "10.1.10.0/24",
+    "description": "Test",
+    "name": "VPC_test_ooo",
+    "region": "e787f5f1-045b-4b2b-97a8-805d374be494"
+}
+- response:
+{
+    "id": "b8720038-dde0-450c-b309-6fcd2d07e346",
+    "name": "VPC_test_ooo",
+    "description": "Test",
+    "cidr": "10.1.10.0/24",
+    "region": "e787f5f1-045b-4b2b-97a8-805d374be494",
+    "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+    "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+    "shared_projects": [],
+    "created_at": "2026-08-25T06:40:29.747828Z",
+    "updated_at": "2026-08-25T06:40:40.132451Z",
+    "route_tables": [
+        "def0c638-5340-45a2-a393-9166aff91849"
+    ],
+    "internet_access": false,
+    "display_name": "VPC_test_ooo - 10.1.10.0/24"
+}
+-status code: 201 Created
+
+==== API Enable internet for VPC =====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- route_tables-id: def0c638-5340-45a2-a393-9166aff91849 (lấy theo VPC)
+
+- method: PUT
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/route-tables/def0c638-5340-45a2-a393-9166aff91849/enable-internet-access/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+-status code: 200 OK
+
+==== API disable internet for VPC =====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- route_tables-id: def0c638-5340-45a2-a393-9166aff91849 (lấy theo VPC)
+
+- method: PUT
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/route-tables/def0c638-5340-45a2-a393-9166aff91849/disable-internet-access/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+-status code: 200 OK
+
+==== API delete VPC =====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- vpc-id: b8720038-dde0-450c-b309-6fcd2d07e346
+
+- method: DELETE
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/vpcs/b8720038-dde0-450c-b309-6fcd2d07e346/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+-status code: 204 No Content
+
+==== API edit name, description VPC =====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- vpc-id: 31af2355-76e5-4275-be30-311d3124ffe1
+
+- method: PUT
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/vpcs/31af2355-76e5-4275-be30-311d3124ffe1/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request payload:
+{
+    "region": "vn-central-1",
+    "id": "31af2355-76e5-4275-be30-311d3124ffe1",
+    "name": "VPC_test_ooo_1",
+    "cidr": "10.1.10.0/24",
+    "createdTime": "14:43 25/08/2026",
+    "internetAccess": "False",
+    "description": "ffffF"
+}
+- respose:
+{"name":"VPC_test_ooo_1","description":"ffffF"}
+- status code: 200 OK
+
+==== API Create Subnet ====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- vpc-id: 886f39b9-8c27-427c-ac31-2f3f158b7b02
+
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/subnets/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request payload:
+{
+    "vpc": "886f39b9-8c27-427c-ac31-2f3f158b7b02",
+    "name": "Subnet_test_0000",
+    "cidr": "10.60.160.128/26",
+    "description": "ggggg"
+}
+- response:
+{
+    "id": "219a9149-5c19-4142-adb0-aa1934392e2e",
+    "name": "Subnet_test_0000",
+    "description": "ggggg",
+    "vpc": "886f39b9-8c27-427c-ac31-2f3f158b7b02",
+    "cidr": "10.60.160.128/26",
+    "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+    "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+    "created_at": "2026-08-25T06:50:24.358763Z",
+    "updated_at": "2026-08-25T06:50:24.358780Z"
+}
+-status code: 201 Created
+
+==== API delete Subnet =====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- subnet-id: 219a9149-5c19-4142-adb0-aa1934392e2e
+
+- method: DELETE
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/subnets/219a9149-5c19-4142-adb0-aa1934392e2e/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- status code: 204 No Content
+
+==== API edit name, description Subnet =====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- subnet-id: f272d1a8-1045-43b9-98d8-5dd500d637f8
+
+- method: PUT
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/subnets/f272d1a8-1045-43b9-98d8-5dd500d637f8/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request payload:
+{
+    "name": "Subnet_App_old",
+    "id": "f272d1a8-1045-43b9-98d8-5dd500d637f8",
+    "cidr": "10.60.160.0/25",
+    "createdTime": "10:13 02/04/2026",
+    "description": "2"
+}
+- respose:
+{"name":"Subnet_App_old","description":"2"}
+- status code: 200 OK
+
+
+==== API get list security-groups ====
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/security-groups/?page=1&page_size=10
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 5,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "1ba03f5e-45f6-4605-b6d4-188373492111",
+            "name": "2026_SG_All",
+            "display_name": "2026_SG_All",
+            "created_at": "2026-07-07T03:19:43.551819Z",
+            "updated_at": "2026-07-07T04:46:12.379428Z",
+            "description": "",
+            "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+            "region": "e787f5f1-045b-4b2b-97a8-805d374be494",
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0"
+        }
+    ]
+}
+- status code: 200
+
+==== API Create Securiry group ====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- region: e787f5f1-045b-4b2b-97a8-805d374be494
+
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/security-groups/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request payload:
+{
+    "name": "Test_SG_0000",
+    "description": "",
+    "region": "e787f5f1-045b-4b2b-97a8-805d374be494"
+}
+- response:
+{
+    "id": "b81d81c9-f341-4a68-a482-5e2c06c35996",
+    "name": "Test_SG_0000",
+    "display_name": "Test_SG_0000",
+    "created_at": "2026-08-25T07:46:19.896429Z",
+    "updated_at": "2026-08-25T07:46:19.896447Z",
+    "description": "",
+    "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+    "region": "e787f5f1-045b-4b2b-97a8-805d374be494",
+    "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0"
+}
+- status code: 201 Created
+
+==== API Delete Securiry group =====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- security-groups-id: b81d81c9-f341-4a68-a482-5e2c06c35996
+
+- method: DELETE
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/security-groups/b81d81c9-f341-4a68-a482-5e2c06c35996
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- status code: 204 No Content
+
+
+==== API edit name, description Securiry group =====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- security-groups-id: 11f5d990-583e-4f98-95a6-c17223ea6430
+
+- method: PUT
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/security-groups/11f5d990-583e-4f98-95a6-c17223ea6430/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request payload:
+{
+    "name": "2026_SG_DB_1",
+    "id": "11f5d990-583e-4f98-95a6-c17223ea6430",
+    "region": "vn-central-1",
+    "createdTime": "10:19 07/07/2026",
+    "description": "rrrrr"
+}
+- respose:
+{"name":"2026_SG_DB_1","description":"rrrrr"}
+- status code: 200 OK
+
+==== API edit description Securiry group rule =====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- security-groups-rule-id: c43d58d9-4889-46ec-8422-feaf2ed86436
+
+- method: PUT
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/security-group-rules//c43d58d9-4889-46ec-8422-feaf2ed86436/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request payload:
+{
+    "description": "test"
+}
+- respose:
+{"description":"test"}
+- status code: 200 OK

@@ -1,0 +1,91 @@
+:root {
+  --interface-scale: 1;
+  --interface-viewport-height: 100svh;
+  --interface-viewport-width: 100vw;
+  --interface-table-max-height: min(62svh, 640px);
+  --interface-dialog-max-height: 84svh;
+  --interface-dialog-top: 8svh;
+  --interface-page-inset: 1rem;
+}
+
+html {
+  min-height: var(--interface-viewport-height);
+}
+
+body,
+#root {
+  min-height: var(--interface-viewport-height);
+}
+
+/* CSS zoom changes paint size but not every viewport-based constraint. Keep
+ * vertically constrained portal UI inside the scaled visual viewport. */
+/* Shared table wrapper.  The component's 62svh cap otherwise remains based on
+ * the unscaled browser viewport and leaves unused vertical space. */
+html[data-interface-scaled='true'] [data-slot='table-container'] {
+  max-height: var(--interface-table-max-height) !important;
+}
+
+/* Full-workspace dialogs (multi-console, terminals, etc.) explicitly opt into
+ * an inset of zero. They must not inherit the regular modal cap on a scaled
+ * viewport, otherwise a large unused strip remains at the bottom on phones. */
+html[data-interface-scaled='true']
+  [data-slot='dialog-content'][class*='inset-0'] {
+  inset: 0 !important;
+  width: var(--interface-viewport-width) !important;
+  min-width: var(--interface-viewport-width) !important;
+  max-width: none !important;
+  height: var(--interface-viewport-height) !important;
+  max-height: var(--interface-viewport-height) !important;
+  transform: none !important;
+}
+
+html[data-interface-scaled='true'] [data-slot='alert-dialog-content'] {
+  max-height: calc(
+    var(--interface-viewport-height) - (var(--interface-page-inset) * 2)
+  ) !important;
+  overflow-y: auto;
+}
+
+html[data-interface-scaled='true'] [data-slot='sheet-content'] {
+  height: var(--interface-viewport-height) !important;
+  max-height: var(--interface-viewport-height) !important;
+}
+
+html[data-interface-scaled='true'] [data-slot='dropdown-menu-content'],
+html[data-interface-scaled='true'] [data-slot='select-content'],
+html[data-interface-scaled='true'] [data-slot='popover-content'],
+html[data-interface-scaled='true'] [data-slot='context-menu-content'] {
+  max-width: calc(
+    var(--interface-viewport-width) - var(--interface-page-inset)
+  );
+  max-height: calc(
+    var(--interface-viewport-height) - var(--interface-page-inset)
+  );
+}
+
+@media screen and (max-width: 767px) {
+  html[data-interface-scaled='true'] [data-slot='dialog-content'] {
+    top: var(--interface-page-inset) !important;
+    width: calc(
+      var(--interface-viewport-width) - var(--interface-page-inset)
+    ) !important;
+    max-width: calc(
+      var(--interface-viewport-width) - var(--interface-page-inset)
+    ) !important;
+    max-height: calc(
+      var(--interface-viewport-height) - var(--interface-page-inset)
+    ) !important;
+  }
+
+  html[data-interface-scaled='true'] [data-slot='dropdown-menu-content'],
+  html[data-interface-scaled='true'] [data-slot='select-content'],
+  html[data-interface-scaled='true'] [data-slot='popover-content'],
+  html[data-interface-scaled='true'] [data-slot='context-menu-content'] {
+    max-width: calc(
+      var(--interface-viewport-width) - var(--interface-page-inset)
+    ) !important;
+    max-height: calc(
+      var(--interface-viewport-height) - var(--interface-page-inset)
+    ) !important;
+  }
+}

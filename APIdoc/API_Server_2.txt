@@ -1,0 +1,204 @@
+- Header for all API: 
+- Authorization: Token xxxxxxxxxxxx
+	(Với xxxxxxxxxxxx là chuỗi tocken mà người dùng có)
+- project-id: yyyyyyyyyyy
+	(Với yyyyyyyyyyy là project id mà người dùng đang chọn, và luôn truyền với mọi API)
+
+
+==== API resize server ====
+- server_id: ddb46007-5134-4630-b2f3-c1004333811d
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/ddb46007-5134-4630-b2f3-c1004333811d/resize/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+    "flavor": "1deffea0-0585-44fa-94e5-47238e77121c"
+}
+
+- status code: 202 Accepted
+- Note: just resize server with flavor (need to load flavor with zone of server)
+
+
+==== API create volume storage ====
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/volumes/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+    "name": "Test",
+    "description": "Ổ cứng",
+    "create_from": {
+        "volume_type": "5109fa24-bb6a-48e6-8392-bc8a1a487d98"
+    },
+    "size": 10,
+    "resize_policy": {
+        "threshold": 12,
+        "capacity_increase": 15,
+        "status": "enabled"
+    }
+}
+
+- status code: 201 Created
+
+==== API get available volume to attach ====
+- method: GET
+- zone_id: 12522f05-dbe6-4fd3-8211-a8f95dcb0848
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/volumes/?status=available&attachment=&zone_id=12522f05-dbe6-4fd3-8211-a8f95dcb0848
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "c0dfb727-2791-4503-b6f9-20f9aa7185d5",
+            "name": "Test",
+            "description": "Ổ cứng",
+            "bootable": false,
+            "encrypted": true,
+            "size": 10,
+            "status": "available",
+            "create_from": {
+                "snapshot": null,
+                "image": null,
+                "volume_type": "5109fa24-bb6a-48e6-8392-bc8a1a487d98",
+                "metadata": {},
+                "backup": null
+            },
+            "attachments": [],
+            "disk_type": "hdd",
+            "speed": "20k",
+            "zone": "vn-central-1a",
+            "zone_id": "12522f05-dbe6-4fd3-8211-a8f95dcb0848",
+            "multiattach": false,
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+            "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+            "created_at": "2026-09-05T03:46:22.950917Z",
+            "updated_at": "2026-09-05T03:47:02.467375Z",
+            "snapshot_policy": null,
+            "backup_policy": null,
+            "device_id": "cf50d35d-472f-470f-8375-58c9b5c6c852",
+            "resize_policy": {
+                "threshold": 12,
+                "capacity_increase": 15,
+                "status": "enabled"
+            },
+            "volume_qos": {
+                "effective_total_iops_sec": 500
+            },
+            "attachment": null
+        }
+    ]
+}
+
+- status code: 200 OK
+
+==== API attack volume to server ====
+- server_id: ddb46007-5134-4630-b2f3-c1004333811d
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/ddb46007-5134-4630-b2f3-c1004333811d/attach-volume/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+    "volume": "c0dfb727-2791-4503-b6f9-20f9aa7185d5"
+}
+- response:
+{
+    "server": "ddb46007-5134-4630-b2f3-c1004333811d",
+    "volume": "c0dfb727-2791-4503-b6f9-20f9aa7185d5"
+}
+- status code: 200 OK
+
+==== API deattack volume server ====
+- server_id: 5ada4c7d-a813-4b50-9a71-fa23c2e0e497
+- volume_id: 123fd79a-a64f-4f08-a660-1ae78fbc574e
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/5ada4c7d-a813-4b50-9a71-fa23c2e0e497/detach-volume/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+    "volume": "123fd79a-a64f-4f08-a660-1ae78fbc574e"
+}
+- status code: 204 No Content
+
+==== API deattack private ip ====
+- server_id: 5ada4c7d-a813-4b50-9a71-fa23c2e0e497
+- private_ip_id: c79b21e4-515d-492d-a81f-c38f438891ae
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/5ada4c7d-a813-4b50-9a71-fa23c2e0e497/detach-private-ip/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+    "privateip": "c79b21e4-515d-492d-a81f-c38f438891ae"
+}
+- status code: 204 No Content
+
+==== API attack elastic ip ====
+- server_id: 5ada4c7d-a813-4b50-9a71-fa23c2e0e497
+- elastic_ip_id: 1cf45533-ac80-4c52-a327-2586cff1c83e
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/5ada4c7d-a813-4b50-9a71-fa23c2e0e497/attach-eip/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+    "eip": "1cf45533-ac80-4c52-a327-2586cff1c83e"
+}
+- status code: 200 OK
+
+==== API deattack elastic ip ====
+- server_id: 5ada4c7d-a813-4b50-9a71-fa23c2e0e497
+- elastic_ip_id: 1cf45533-ac80-4c52-a327-2586cff1c83e
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/5ada4c7d-a813-4b50-9a71-fa23c2e0e497/detach-eip/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+    "eip": "1cf45533-ac80-4c52-a327-2586cff1c83e"
+}
+- status code: 204 No Content
+
+==== Dangerous API start server ====
+- server_id: 5ada4c7d-a813-4b50-9a71-fa23c2e0e497
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/5ada4c7d-a813-4b50-9a71-fa23c2e0e497/start/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+}
+
+- status code: 202 Accepted
+
+==== Dangerous API stop server ====
+- server_id: 5ada4c7d-a813-4b50-9a71-fa23c2e0e497
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/5ada4c7d-a813-4b50-9a71-fa23c2e0e497/stop/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+}
+
+- status code: 202 Accepted
+
+==== Dangerous API delete server ====
+- server_id: 5ada4c7d-a813-4b50-9a71-fa23c2e0e497
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/5ada4c7d-a813-4b50-9a71-fa23c2e0e497/delete/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+    "volumes": [
+        "db8bbdff-ce6e-4321-92be-726a69a4c2dd",
+        "21c60899-24a6-4000-a368-8f11d6a7e0ad",
+        "b71ce5a8-c611-4f83-9165-acabcbe879d2",
+        "f71f7215-8507-4fdc-ac2f-f63eaa356079",
+        "51dd2616-31f1-4748-9373-765a70908a09"
+    ],
+    "eips": [
+        "1cf45533-ac80-4c52-a327-2586cff1c83e"
+    ],
+    "private_ips": [
+        "f44beab3-e2e7-49dd-babb-4ea0681f1908"
+    ]
+}
+- status code: 204 No Content

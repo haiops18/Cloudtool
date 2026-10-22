@@ -1,0 +1,85 @@
+#cloud-config
+# CloudTool Ubuntu: Local + Monitor static networking and Teleport.
+# Variables: {{TELEPORT_ENABLE}}, {{TP_REGION}}, {{TP_SYSTEM}}, {{TP_HOSTNAME}}
+
+package_update: false
+
+write_files:
+  - path: /usr/local/sbin/cloudtool-teleport.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      [ '{{TELEPORT_ENABLE}}' = 'true' ] || exit 0
+
+      # Do not use NIC ordering (eth0/eth1/ens*). Find the Monitor NIC from
+      # its network convention instead: an IPv4 address in 10.129.x.x.
+      monitor_iface=''
+      monitor_ip=''
+      for attempt in $(seq 1 90); do
+        mapfile -t monitor_matches < <(
+          ip -o -4 addr show scope global 2>/dev/null | awk '
+            $2 ~ /^(eth|ens)/ {
+              split($4, cidr, "/")
+              if (cidr[1] ~ /^10\.129\./) print $2 " " cidr[1]
+            }
+          '
+        )
+        if [ "${#monitor_matches[@]}" -eq 1 ]; then
+          read -r monitor_iface monitor_ip <<< "${monitor_matches[0]}"
+          break
+        fi
+        if [ "${#monitor_matches[@]}" -gt 1 ]; then
+          printf 'Multiple 10.129.x.x Monitor IPs found; refusing to choose: %s\n' "${monitor_matches[*]}" >&2
+          exit 1
+        fi
+        sleep 2
+      done
+      [ -n "$monitor_iface" ] || {
+        echo 'No 10.129.x.x Monitor IP was found on an eth*/ens* NIC after 180 seconds.' >&2
+        exit 1
+      }
+      echo "Teleport monitor network: ip=$monitor_ip iface=$monitor_iface"
+
+      # Fill this value manually before deploying. It is deliberately not
+      # read from a CloudTool/project variable.
+      token='f7adb7ccdf04037bcd2b554hjn343lk52ec6010fd6f0caec94ba190b765'
+      [ -n "$token" ] || { echo 'TP_JOIN_TOKEN is required when Teleport is enabled' >&2; exit 1; }
+      region='{{TP_REGION}}'
+      case "$region" in
+        public) version='13.4.14'; auth='public.teleport.gpdn.net:443'; host_ip='10.129.0.232'; host_name='public.teleport.gpdn.net' ;;
+        vpublic) version='16.4.11'; auth='vpublic.teleport.gpdn.net:443'; host_ip='10.129.24.54'; host_name='vpublic.teleport.gpdn.net' ;;
+        *) echo "Unsupported TP_REGION: $region" >&2; exit 1 ;;
+      esac
+      installed_version=$(dpkg-query -W -f='${Version}' teleport 2>/dev/null || true)
+      installed_version=${installed_version%%-*}
+      if [ "$installed_version" != "$version" ]; then
+        curl -fsSL -o /tmp/teleport.deb "https://cdn.teleport.dev/teleport_${version}_amd64.deb"
+        dpkg -i /tmp/teleport.deb
+        rm -f /tmp/teleport.deb
+      fi
+      # Remove both region aliases and their fixed addresses before adding the
+      # selected one. This prevents stale public/vpublic mappings from
+      # shadowing the region currently being configured.
+      sed -i -E '/(^|[[:space:]])(public|vpublic)\.teleport\.gpdn\.net([[:space:]]|$)/d; /^(10\.129\.0\.232|10\.129\.24\.54)[[:space:]]/d' /etc/hosts
+      printf '%s %s\n' "$host_ip" "$host_name" >> /etc/hosts
+      systemctl stop teleport 2>/dev/null || true
+      rm -rf /var/lib/teleport
+      cat > /etc/systemd/system/teleport.service <<EOF
+      [Unit]
+      Description=CloudTool Teleport node
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      ExecStart=/usr/local/bin/teleport start --pid-file=/run/teleport.pid --roles=node --token=$token --auth-server=$auth --nodename={{TP_SYSTEM}}_{{TP_HOSTNAME}}_$monitor_ip --labels=env=pro,system={{TP_SYSTEM}},type=server,ip=$monitor_ip
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      systemctl daemon-reload
+      systemctl enable --now teleport
+
+runcmd:
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if /usr/local/sbin/cloudtool-teleport.sh >> /var/log/cloudtool/teleport.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s teleport\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']

@@ -1,0 +1,30 @@
+- Header for all API: 
+- Authorization: Token xxxxxxxxxxxx
+	(Với xxxxxxxxxxxx là chuỗi tocken mà người dùng có)
+- project-id: yyyyyyyyyyy
+	(Với yyyyyyyyyyy là project id mà người dùng đang chọn, và luôn truyền với mọi API)
+
+
+===== API Share Network to project ====
+- VPC:
+ + vn-central-1: 028c8661-0d8d-4f7b-a3cb-ac7c2acdeb0d
+ + vn-north-1: 7f8a5d05-48ef-4e5e-93d8-1ee8906cd642
+- project_id:
+ + central-1: c762aa65-ee59-4b18-8cc3-430aea368e46   
+ + north-1: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+
+- method: POST
+- api_link: https://console.viettelcloud.vn/api/infra/vpcs/7f8a5d05-48ef-4e5e-93d8-1ee8906cd642/share
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request
+{
+	"projects": ["fef1e748-f1f3-4b1f-9b55-a564c9abe8f8"]
+}
+- response:
+ + 202 => accepted OK
+
+- Cách thực hiện: VPC có 2 cụm là vn-central và vn-north, project thì cũng có 2 cụm tương ứng
++ Chèn project_id muốn share vào body (ví dụ: {"projects": ["fef1e748-f1f3-4b1f-9b55-a564c9abe8f8"]}
++ Chèn ID VPC của cụm vào api_link: (ví dụ: https://console.viettelcloud.vn/api/infra/vpcs/7f8a5d05-48ef-4e5e-93d8-1ee8906cd642/share)
++ Chèn project_id của cụm vào project-id ở header (ví dụ: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f)
++ Cần kiểm tra VPC có đúng có đúng region với project không ( luôn đảm bảo central đi với central, north đi với north)

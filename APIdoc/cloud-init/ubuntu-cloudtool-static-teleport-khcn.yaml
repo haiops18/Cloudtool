@@ -1,0 +1,171 @@
+#cloud-config
+# It does not configure Elastic IP, Teleport/monitor NICs, volumes, or packages.
+# Optional variable: {{local_gateway}}. A valid value is used as the gateway;
+# Variables: {{TELEPORT_ENABLE}}, {{TP_MONITOR_IP}}, {{local_gateway}}, {{vpc_cidr}}
+
+
+write_files:
+  - path: /usr/local/sbin/cloudtool-set-hostname.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      server_name='{{server_name}}'
+      [ -n "$server_name" ] || { echo 'server_name is required' >&2; exit 1; }
+      hostnamectl set-hostname "$server_name"
+      printf '%s [hostname] SUCCESS hostname=%s\n' "$(date -u +%FT%TZ)" "$server_name"
+
+  - path: /usr/local/sbin/cloudtool-static-ip.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      LOG_DIR=/var/log/cloudtool
+      LOG_FILE="$LOG_DIR/static-ip.log"
+      NETPLAN_DIR=/etc/netplan
+      NETPLAN_FILE="$NETPLAN_DIR/50-cloud-init.yaml"
+      BACKUP_ROOT=/var/backups/cloudtool/netplan
+      LOCAL_GATEWAY='{{local_gateway}}'
+
+      mkdir -p "$LOG_DIR" "$BACKUP_ROOT"
+      chmod 0750 "$LOG_DIR"
+      exec >> "$LOG_FILE" 2>&1
+
+      timestamp() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+      log() { printf '%s [static-ip] %s\n' "$(timestamp)" "$*"; }
+      trap 'status=$?; log "ERROR line=${LINENO} exit=${status}"; exit "$status"' ERR
+      is_ipv4() {
+        [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+        local octet
+        local -a octets
+        IFS=. read -r -a octets <<< "$1"
+        for octet in "${octets[@]}"; do
+          [ "$octet" -ge 0 ] && [ "$octet" -le 255 ] || return 1
+        done
+      }
+
+      # Wait for the local NIC, its IPv4 address, and its DHCP default route.
+      # Cloud NIC attachment can complete after cloud-init has started.
+      iface=''
+      address=''
+      gateway=''
+      for attempt in $(seq 1 90); do
+        read -r gateway iface < <(
+          ip -4 route show default 2>/dev/null \
+            | awk '/default/ {print $3, $5; exit}'
+        ) || true
+        if [ -n "${iface:-}" ]; then
+          address=$(ip -o -4 addr show dev "$iface" scope global 2>/dev/null \
+            | awk '{print $4; exit}' || true)
+        fi
+        if [ -n "${iface:-}" ] && [ -n "${address:-}" ] && [ -n "${gateway:-}" ]; then
+          break
+        fi
+        if [ "$attempt" -eq 1 ] || [ $((attempt % 10)) -eq 0 ]; then
+          log "WAIT attempt=${attempt}/90 iface=${iface:-none} address=${address:-none} gateway=${gateway:-none}"
+        fi
+        sleep 2
+      done
+
+      [ -n "${iface:-}" ] && [ -n "${address:-}" ] && [ -n "${gateway:-}" ] || {
+        log 'ERROR local NIC, address, or gateway was not ready after 180 seconds'
+        exit 1
+      }
+      if is_ipv4 "$LOCAL_GATEWAY"; then
+        gateway="$LOCAL_GATEWAY"
+        log "GATEWAY source=variable value=$gateway"
+      else
+        log "GATEWAY source=nic-route value=$gateway"
+      fi
+      log "NIC_READY iface=$iface address=$address gateway=$gateway"
+
+      # Preserve the original cloud-provided netplan, then replace it with one
+      # explicit static configuration for the detected local NIC.
+      backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+      cp -a "$NETPLAN_DIR" "$backup_dir"
+      find "$NETPLAN_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) -delete
+      log "NETPLAN_BACKUP path=$backup_dir"
+
+      cat > "$NETPLAN_FILE" <<EOF
+      network:
+        version: 2
+        ethernets:
+          $iface:
+            dhcp4: false
+            addresses:
+              - $address
+            routes:
+              - to: 0.0.0.0/0
+                via: $gateway
+            nameservers:
+              addresses: [8.8.8.8, 1.1.1.1]
+      EOF
+
+      chmod 600 "$NETPLAN_FILE"
+      log "NETPLAN_RENDERED file=$NETPLAN_FILE"
+      sed 's/^/NETPLAN | /' "$NETPLAN_FILE"
+      netplan generate
+      netplan apply
+      sleep 2
+
+      ip -4 route show default | grep -Fq "via $gateway dev $iface" || {
+        log "VERIFY_FAILED missing default route via $gateway dev $iface"
+        exit 1
+      }
+      log "SUCCESS iface=$iface address=$address gateway=$gateway"
+
+  - path: /usr/local/sbin/cloudtool-teleport.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      # Teleport connection configuration — edit these four values when needed.
+      version='18.10.6'
+      auth='public.teleport.gpdn.net:443'
+      host_ip='10.129.0.232'
+      host_name='public.teleport.gpdn.net'
+
+      [ '{{TELEPORT_ENABLE}}' = 'true' ] || exit 0
+      # Fill this value manually before deploying. It is deliberately not
+      # read from a CloudTool/project variable.
+      token='f7adb7ccdf04037bcd2b554hjn343lk52ec6010fd6f0caec94ba190b765'
+      [ -n "$token" ] || { echo 'TP_JOIN_TOKEN is required when Teleport is enabled' >&2; exit 1; }
+      installed_version=$(dpkg-query -W -f='${Version}' teleport 2>/dev/null || true)
+      installed_version=${installed_version%%-*}
+      if [ "$installed_version" != "$version" ]; then
+        curl -fsSL -o /tmp/teleport.deb "https://cdn.teleport.dev/teleport_${version}_amd64.deb"
+        dpkg -i /tmp/teleport.deb
+        rm -f /tmp/teleport.deb
+      fi
+      # Remove both region aliases and their fixed addresses before adding the
+      # selected one. This prevents stale public/vpublic mappings from
+      # shadowing the region currently being configured.
+      sed -i -E '/(^|[[:space:]])(public|vpublic)\.teleport\.gpdn\.net([[:space:]]|$)/d; /^(10\.129\.0\.232|10\.129\.24\.54)[[:space:]]/d' /etc/hosts
+      printf '%s %s\n' "$host_ip" "$host_name" >> /etc/hosts
+      systemctl stop teleport 2>/dev/null || true
+      rm -rf /var/lib/teleport
+      cat > /etc/systemd/system/teleport.service <<EOF
+      [Unit]
+      Description=Teleport node
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      ExecStart=/usr/local/bin/teleport start --pid-file=/run/teleport.pid --roles=node --token=$token --auth-server=$auth --nodename={{TP_SYSTEM}}_{{TP_HOSTNAME}}_{{TP_MONITOR_IP}} --labels=env=pro,system={{TP_SYSTEM}},type=server,ip={{TP_MONITOR_IP}}
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      systemctl daemon-reload
+      systemctl enable --now teleport
+
+runcmd:
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if /usr/local/sbin/cloudtool-set-hostname.sh >> /var/log/cloudtool/hostname.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s hostname\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']
+  # Keep the post-boot delay: the local Cloud NIC may not be ready when
+  # cloud-init starts. The script itself waits for up to 180 seconds as well.
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if sleep 30 && /usr/local/sbin/cloudtool-static-ip.sh; then state=SUCCESS; else state=FAILED; fi; printf "%s %s static-ip\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']
+  - [bash, -c, 'if /usr/local/sbin/cloudtool-teleport.sh >> /var/log/cloudtool/teleport.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s teleport\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']

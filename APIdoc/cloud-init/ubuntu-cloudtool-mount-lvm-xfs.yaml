@@ -1,0 +1,79 @@
+  - path: /usr/local/sbin/cloudtool-mount-volumes.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      # Blank data disk -> LVM PV -> VG/LV -> XFS -> mount + fstab.
+      set -Eeuo pipefail
+
+      rows='{{data_volumes_shell}}'
+      log=/var/log/cloudtool/mount-volumes.log
+      mkdir -p /var/log/cloudtool
+      exec >> "$log" 2>&1
+      trap 'echo "$(date -u +%FT%TZ) ERROR line=$LINENO"; exit 1' ERR
+
+      # mkfs.xfs is supplied by xfsprogs, which is not installed on every
+      # Ubuntu cloud image. Install it only when it is missing.
+      if ! command -v mkfs.xfs >/dev/null 2>&1; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y xfsprogs
+      fi
+
+      # Never use the disk backing /. This also works when / is on LVM.
+      root_source=$(findmnt -n -o SOURCE /)
+      mapfile -t root_disks < <(lsblk -srno NAME,TYPE "$root_source" 2>/dev/null | awk '$2 == "disk" { print "/dev/" $1 }')
+      is_root() { for root in "${root_disks[@]}"; do [ "$1" = "$root" ] && return 0; done; return 1; }
+
+      mapfile -t volumes < <(printf '%b\n' "$rows" | awk -F, '$1 == "data" && NF >= 4 && $4 ~ /^\//')
+      [ "${#volumes[@]}" -gt 0 ] || exit 0
+
+      disks=()
+      for attempt in $(seq 1 90); do
+        mapfile -t disks < <(lsblk -dnpo NAME,TYPE | awk '$2 == "disk" { print $1 }' | while read -r disk; do
+          is_root "$disk" && continue
+          lsblk -nrpo MOUNTPOINT "$disk" | grep -q . && continue
+          printf '%s\n' "$disk"
+        done)
+        [ "${#disks[@]}" -ge "${#volumes[@]}" ] && break
+        sleep 2
+      done
+      [ "${#disks[@]}" -ge "${#volumes[@]}" ] || { echo 'Not enough blank data disks.'; exit 1; }
+
+      for index in "${!volumes[@]}"; do
+        IFS=, read -r mount_as disk_type size mount_path <<< "${volumes[$index]}"
+        disk="${disks[$index]}"
+        name=$(printf '%s' "$mount_path" | sed 's#^/##; s#[^A-Za-z0-9_]#_#g')
+        name="${name:-data_$((index + 1))}"
+        vg="$name"
+        lv="$name"
+        lv_path="/dev/$vg/$lv"
+
+        # Do not overwrite a disk that was not provisioned by this script.
+        if ! vgs "$vg" >/dev/null 2>&1; then
+          wipefs -n "$disk" 2>/dev/null | grep -q . && { echo "Refusing non-blank disk $disk"; exit 1; }
+          parted -s "$disk" mklabel gpt
+          parted -s "$disk" mkpart primary 1MiB 100%
+          parted -s "$disk" set 1 lvm on
+          partprobe "$disk"
+          partition=''
+          for wait in $(seq 1 20); do
+            partition=$(lsblk -nrpo NAME,TYPE "$disk" | awk '$2 == "part" { print $1; exit }')
+            [ -n "$partition" ] && break
+            sleep 1
+          done
+          [ -n "$partition" ] || { echo "No partition on $disk"; exit 1; }
+
+          pvcreate "$partition"
+          vgcreate "$vg" "$partition"
+          lvcreate -l +100%FREE -n "$lv" "$vg"
+        fi
+
+        [ -b "$lv_path" ] || { echo "Missing logical volume $lv_path"; exit 1; }
+        blkid -s TYPE -o value "$lv_path" 2>/dev/null | grep -qx xfs || mkfs.xfs -f "$lv_path"
+        mkdir -p "$mount_path"
+        awk -v target="$mount_path" 'NF < 2 || $1 ~ /^#/ || $2 != target { print }' /etc/fstab > /etc/fstab.cloudtool
+        mv /etc/fstab.cloudtool /etc/fstab
+        echo "$lv_path    $mount_path    xfs     defaults    0    0" | tee -a /etc/fstab
+        mount "$lv_path" "$mount_path"
+        echo "Mounted $lv_path at $mount_path"
+      done

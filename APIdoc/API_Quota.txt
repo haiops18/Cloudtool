@@ -1,0 +1,81 @@
+- Header for all API: 
+- Authorization: Token xxxxxxxxxxxx
+	(Với xxxxxxxxxxxx là chuỗi tocken mà người dùng có)
+- project-id: yyyyyyyyyyy
+	(Với yyyyyyyyyyy là project id mà người dùng đang chọn, và luôn truyền với mọi API)
+
+==== API get quota ====
+- project-id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/tenant/projects/285c9b2f-55c8-4a97-a7ca-a89277bd9261/quotas/?page=1&page_size=10
+- header: project-id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+- response:
+{
+    "count": 24,
+    "next": "https://api.cmp.vcloud:8000/tenant/projects/285c9b2f-55c8-4a97-a7ca-a89277bd9261/quotas/?page=2&page_size=10",
+    "previous": null,
+    "results": [
+        {
+            "service_name": "Network",
+            "name": "Elastic IPs",
+            "limit": 3,
+            "used": 3
+        },
+        {
+            "service_name": "Network",
+            "name": "Security Group Rules",
+            "limit": 20,
+            "used": 16
+        },
+        {
+            "service_name": "Block Storage",
+            "name": "Volumes",
+            "limit": 10,
+            "used": 7
+        },
+        {
+            "service_name": "Server",
+            "name": "CPUs",
+            "limit": 30,
+            "used": 17
+        },
+        {
+            "service_name": "Server",
+            "name": "Servers",
+            "limit": 10,
+            "used": 5
+        },
+        {
+            "service_name": "Network",
+            "name": "VPCs",
+            "limit": 10,
+            "used": 5
+        },
+        {
+            "service_name": "Block Storage",
+            "name": "Persistent Disk Standard (GiB)",
+            "limit": 500,
+            "used": 230
+        },
+        {
+            "service_name": "Block Storage",
+            "name": "Persistent Disk SSD (GiB)",
+            "limit": 150,
+            "used": 60
+        },
+        {
+            "service_name": "Network",
+            "name": "Subnets",
+            "limit": 10,
+            "used": 4
+        },
+        {
+            "service_name": "Server",
+            "name": "RAM (GiB)",
+            "limit": 130,
+            "used": 42
+        }
+    ]
+}
+- status code: 200

@@ -1,0 +1,149 @@
+#cloud-config
+# =============================================================================
+# Cloud-init cho CentOS / RHEL / Rocky / AlmaLinux (Terraform template)
+# - Tự chạy `yum/dnf update` lúc first boot (cloud-init auto-detect)
+# - Tự reboot nếu kernel/glibc upgrade yêu cầu
+# - Tạo user vt_admin + app (match template Viettel GUI)
+# - Freeze IP DHCP thành static ifcfg
+# - Mount N data disks theo volumes_csv
+# - DNS: 8.8.8.8 / 8.8.4.4
+# =============================================================================
+
+users:
+  - default
+  - name: vt_admin
+    gecos: vt_admin
+    groups: wheel
+    shell: /bin/bash
+    lock_passwd: false
+
+  - name: app
+    gecos: app
+    shell: /bin/bash
+    lock_passwd: false
+
+chpasswd:
+  expire: false
+  users:
+    - name: root
+      password: Viettel@2026
+      type: text
+    - name: vt_admin
+      password: Viettel@2023
+      type: text
+    - name: app
+      password: Viettel@2023
+      type: text
+
+ssh_pwauth: true
+disable_root: false
+
+# ---- Auto-update lúc first boot ----
+package_update: true
+package_upgrade: true
+package_reboot_if_required: true
+
+write_files:
+  # Danh sách data disks
+  - path: /etc/vts-extra-disks.conf
+    permissions: '0644'
+    content: |
+%{ for d in extra_disks ~}
+      ${d.size_gb} ${d.mount_point} ${d.filesystem}
+%{ endfor ~}
+
+  # Script freeze DHCP IP → static ifcfg
+  - path: /usr/local/sbin/vts-freeze-static-ip.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      IFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -1)
+      ADDR=$(ip -4 -o addr show "$IFACE" | awk '{print $4}' | head -1)
+      IP=$(echo "$ADDR" | cut -d/ -f1)
+      PREFIX=$(echo "$ADDR" | cut -d/ -f2)
+      GW=$(ip -4 route show default | awk '/default/ {print $3}' | head -1)
+      if [ -z "$IFACE" ] || [ -z "$IP" ] || [ -z "$GW" ]; then
+        echo "[freeze-static-ip] cannot determine network (IFACE=$IFACE IP=$IP GW=$GW) — aborting" >&2
+        exit 0
+      fi
+      echo "[freeze-static-ip] $IFACE -> $IP/$PREFIX via $GW"
+      cat > /etc/sysconfig/network-scripts/ifcfg-$IFACE <<EOF
+      DEVICE=$IFACE
+      NAME=$IFACE
+      BOOTPROTO=static
+      ONBOOT=yes
+      IPADDR=$IP
+      PREFIX=$PREFIX
+      GATEWAY=$GW
+      DNS1=8.8.8.8
+      DNS2=8.8.4.4
+      DEFROUTE=yes
+      EOF
+      systemctl restart NetworkManager 2>/dev/null || systemctl restart network 2>/dev/null || true
+
+  # Script mount extra data disks
+  - path: /usr/local/sbin/vts-mount-extra-disks.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      CONF=/etc/vts-extra-disks.conf
+      if [ ! -s "$CONF" ]; then
+        echo "[mount-extra-disks] no extra disks configured"
+        exit 0
+      fi
+
+      ROOT_SRC=$(findmnt -no SOURCE /)
+      BOOT_DISK=$(lsblk -ndo PKNAME "$ROOT_SRC" 2>/dev/null || true)
+      [ -z "$BOOT_DISK" ] && BOOT_DISK=$(basename "$ROOT_SRC" | sed 's/[0-9]*$//')
+      echo "[mount-extra-disks] boot disk: $BOOT_DISK"
+
+      declare -A AVAIL
+      while IFS= read -r line; do
+        name=$(echo "$line" | awk '{print $1}')
+        size_b=$(echo "$line" | awk '{print $2}')
+        [ "$name" = "$BOOT_DISK" ] && continue
+        if lsblk -n -o MOUNTPOINT "/dev/$name" 2>/dev/null | grep -q .; then
+          continue
+        fi
+        size_gb=$(( size_b / 1024 / 1024 / 1024 ))
+        AVAIL[$name]=$size_gb
+        echo "[mount-extra-disks] available: $name = $${size_gb}GB"
+      done < <(lsblk -dn -b -o NAME,SIZE)
+
+      while read -r sz mnt fs; do
+        [ -z "$sz" ] && continue
+        target=""
+        for dev in "$${!AVAIL[@]}"; do
+          if [ "$${AVAIL[$dev]}" = "$sz" ]; then
+            target=$dev
+            break
+          fi
+        done
+        if [ -z "$target" ]; then
+          echo "[mount-extra-disks] no available disk matching $${sz}GB for $mnt" >&2
+          continue
+        fi
+        DEV=/dev/$target
+        echo "[mount-extra-disks] $DEV ($${sz}GB) -> $mnt ($fs)"
+
+        EXISTING_FS=$(blkid -s TYPE -o value "$DEV" 2>/dev/null || echo "")
+        if [ -z "$EXISTING_FS" ]; then
+          mkfs.$fs -f "$DEV" 2>/dev/null || mkfs.$fs -F "$DEV"
+        elif [ "$EXISTING_FS" != "$fs" ]; then
+          echo "[mount-extra-disks] $DEV already has $EXISTING_FS (expected $fs) — skip mkfs" >&2
+        fi
+
+        mkdir -p "$mnt"
+        UUID=$(blkid -s UUID -o value "$DEV")
+        sed -i "\|^UUID=$UUID|d" /etc/fstab
+        echo "UUID=$UUID $mnt $fs defaults,nofail 0 2" >> /etc/fstab
+        mount "$mnt" 2>/dev/null || true
+
+        unset AVAIL[$target]
+      done < "$CONF"
+
+runcmd:
+  - /usr/local/sbin/vts-freeze-static-ip.sh
+  - /usr/local/sbin/vts-mount-extra-disks.sh

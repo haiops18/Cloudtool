@@ -1,0 +1,44 @@
+services:
+  frontend:
+    image: local/cloudtool-frontend:${IMAGE_TAG}
+    restart: unless-stopped
+    expose: ["8080"]
+    networks: [cloudtool]
+  backend:
+    image: local/cloudtool-backend:${IMAGE_TAG}
+    command: ["uvicorn", "app.terraform_app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    restart: unless-stopped
+    env_file: [/srv/cloud-tool/env/backend.env]
+    environment:
+      # Persist user-scoped tsh certificates in the mounted runtime volume,
+      # not in the image filesystem.
+      TELEPORT_TSH_HOME: /data/teleport-tsh
+    volumes: [/srv/cloud-tool/data/backend:/data]
+    expose: ["8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [cloudtool]
+  agent-service:
+    image: local/cloudtool-agent-service:${IMAGE_TAG}
+    restart: unless-stopped
+    env_file: [/srv/cloud-tool/env/agent-service.env]
+    volumes: [/srv/cloud-tool/data/agent-service:/app/data]
+    expose: ["8004"]
+    networks: [cloudtool]
+  gateway:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    depends_on:
+      backend: { condition: service_healthy }
+      frontend: { condition: service_started }
+      agent-service: { condition: service_started }
+    ports: ["80:80"]
+    volumes: ["./infra/nginx/ip-only.conf:/etc/nginx/conf.d/default.conf:ro"]
+    networks: [cloudtool]
+networks:
+  cloudtool:
+    name: cloudtool-production

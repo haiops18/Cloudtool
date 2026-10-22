@@ -1,0 +1,117 @@
+- Header for all API: 
+- Authorization: Token xxxxxxxxxxxx
+	(Với xxxxxxxxxxxx là chuỗi tocken mà người dùng có)
+- project-id: yyyyyyyyyyy
+	(Với yyyyyyyyyyy là project id mà người dùng đang chọn, và luôn truyền với mọi API)
+
+==== API get Subnet ====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/subnets/?page=1&page_size=10
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 5,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "d4cf3098-181a-43ce-be13-4bc3eecea490",
+            "name": "CNTT_MONITOR_2",
+            "description": "Created by CMP",
+            "vpc": {
+                "id": "7f8a5d05-48ef-4e5e-93d8-1ee8906cd642",
+                "display_name": "CNTT_MONITOR_2 - 10.129.24.0/21",
+                "name": "CNTT_MONITOR_2"
+            },
+            "cidr": "10.129.24.0/21",
+            "region": "vn-north-1",
+            "owner": null,
+            "project": "fdad79fd-c4c7-413f-90a4-c057ab96e29f",
+            "created_at": "2026-01-06T09:22:22.443411Z",
+            "updated_at": "2026-01-06T09:22:22.443432Z",
+            "display_name": "CNTT_MONITOR_2 - 10.129.24.0/21"
+        }
+    ]
+}
+
+==== API get private IP with subnet IP ====
+- subnet_id=d4cf3098-181a-43ce-be13-4bc3eecea490
+- ip_address_search=10.129.25.168
+
+- method: GET
+- api_link: 
+https://console.viettelcloud.vn/legacy/api/infra/private-ips/?page=1&page_size=10&subnet_id=d4cf3098-181a-43ce-be13-4bc3eecea490&ip_address=10.129.25.168
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "7a5cf360-66c9-427f-88da-8306ac573775",
+            "description": "",
+            "subnet": "d4cf3098-181a-43ce-be13-4bc3eecea490",
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+            "device_owner": "user",
+            "region": "vn-north-1",
+            "project": "fef1e748-f1f3-4b1f-9b55-a564c9abe8f8",
+            "ip_address": "10.129.25.168",
+            "mac_address": "fa:16:3e:27:70:00",
+            "server": {
+                "id": "3f43bd15-cf54-4791-8c3d-7f485d26587d",
+                "name": "XHS-SBT-gateway-03",
+                "display_name": "XHS-SBT-gateway-03"
+            },
+            "created_at": "2026-07-28T04:38:48.100184Z",
+            "updated_at": "2026-07-29T02:47:58.639338Z",
+            "display_name": "10.129.25.168",
+            "vips": [],
+            "vpc_id": "7f8a5d05-48ef-4e5e-93d8-1ee8906cd642"
+        }
+    ]
+}
+- status code: 200 OK
+- description:
++ api link: bỏ "&ip_address=10.129.25.168" là sẽ get all ip_address
++ "description": "Port is created by Cloud services" => ip_address này không sử dụng được
++ "description": "", "server": null => ip_address này có thể dùng được
+
+
+==== API create ip_address ======
+- subnet_id=d4cf3098-181a-43ce-be13-4bc3eecea490
+- ip_address_need_to_create=10.129.25.169
+
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/private-ips/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{"ip_address":"10.129.25.169","description":"","subnet":"d4cf3098-181a-43ce-be13-4bc3eecea490"}
+- response:
+{
+    "id": "2f3f5ec9-ce64-4a88-b1c1-a3619c137746",
+    "description": "",
+    "mac_address": "fa:16:3e:b8:ee:6c",
+    "ip_address": "10.129.25.169",
+    "project": "fef1e748-f1f3-4b1f-9b55-a564c9abe8f8",
+    "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+    "subnet": "d4cf3098-181a-43ce-be13-4bc3eecea490",
+    "server": null,
+    "created_at": "2026-07-29T03:10:13.442177Z",
+    "updated_at": "2026-07-29T03:10:13.442192Z",
+    "region": "vn-north-1"
+}
+- status code: 201 Created
+
+==== API delete ip_address ======
+- ip_id_address_need_to_delete: 4c699927-096b-45a0-826d-f49c58e7b46b
+
+- method: DELETE
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/private-ips//4c699927-096b-45a0-826d-f49c58e7b46b/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+- response:
+
+- status code: 204 No Content

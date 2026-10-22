@@ -1,0 +1,63 @@
+pipeline {
+  agent any
+  options { disableConcurrentBuilds(); timestamps(); buildDiscarder(logRotator(numToKeepStr: '30')); timeout(time: 20, unit: 'MINUTES') }
+  parameters {
+    choice(name: 'ACTION', choices: ['promote', 'rollback'], description: 'promote deploys a validated CI image; rollback restores a known-good immutable tag.')
+    choice(name: 'COMPONENTS', choices: ['auto', 'frontend', 'backend', 'agent-service', 'frontend,backend', 'frontend,agent-service', 'backend,agent-service', 'all'], description: 'auto promotes exactly the components built by the latest successful CI. Rollback requires an explicit selection.')
+    string(name: 'IMAGE_TAG', trim: true, description: 'Required only for rollback: enter the known-good 12-character image tag. Leave blank for promote.')
+  }
+  environment { REGISTRY = 'ghcr.io/ducanhslvp'; REPOSITORY = 'ducanhslvp/CloudTool' }
+  stages {
+    stage('Select release candidate') { steps { script {
+      if (params.ACTION == 'promote') {
+        def candidate = sh(script: 'set -eu; . "$JENKINS_HOME/cloudtool-release/latest-successful-candidate"; printf "%s|%s" "$tag" "$components"', returnStdout: true).trim().tokenize('|')
+        env.RESOLVED_IMAGE_TAG = candidate[0]
+        env.CANDIDATE_COMPONENTS = candidate[1]
+        env.RESOLVED_COMPONENTS = params.COMPONENTS == 'auto' ? env.CANDIDATE_COMPONENTS : (params.COMPONENTS == 'all' ? 'frontend,backend,agent-service' : params.COMPONENTS)
+        for (component in env.RESOLVED_COMPONENTS.tokenize(',')) {
+          if (!env.CANDIDATE_COMPONENTS.tokenize(',').contains(component)) {
+            error("${component} was not built by the latest CI candidate. Use COMPONENTS=auto or run CI for that component first.")
+          }
+        }
+        echo "Using latest successful CI candidate: ${env.RESOLVED_IMAGE_TAG} (${env.RESOLVED_COMPONENTS})"
+      } else {
+        if (!params.IMAGE_TAG?.trim()) { error('IMAGE_TAG is required for rollback.') }
+        if (params.COMPONENTS == 'auto') { error('Choose the component(s) to roll back; auto is only valid for promote.') }
+        env.RESOLVED_IMAGE_TAG = params.IMAGE_TAG.trim()
+        env.RESOLVED_COMPONENTS = params.COMPONENTS == 'all' ? 'frontend,backend,agent-service' : params.COMPONENTS
+        echo "Rolling back ${env.RESOLVED_COMPONENTS} to requested tag: ${env.RESOLVED_IMAGE_TAG}"
+      }
+    } } }
+    stage('Validate release candidate') { steps { withCredentials([string(credentialsId: 'ghcr-cloudtool-write-token', variable: 'GHCR_TOKEN')]) { sh '''set -eu
+      case "$RESOLVED_IMAGE_TAG" in
+        [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+        *) echo 'Resolved image tag must be exactly 12 lowercase hexadecimal characters'; exit 2 ;;
+      esac
+      printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u ducanhslvp --password-stdin
+      case ",$RESOLVED_COMPONENTS," in *,frontend,*) docker manifest inspect "$REGISTRY/cloudtool-frontend:$RESOLVED_IMAGE_TAG" >/dev/null ;; esac
+      case ",$RESOLVED_COMPONENTS," in *,backend,*) docker manifest inspect "$REGISTRY/cloudtool-backend:$RESOLVED_IMAGE_TAG" >/dev/null ;; esac
+      case ",$RESOLVED_COMPONENTS," in *,agent-service,*) docker manifest inspect "$REGISTRY/cloudtool-agent-service:$RESOLVED_IMAGE_TAG" >/dev/null ;; esac
+      docker logout ghcr.io''' } } }
+    stage('Create reviewed GitOps pull request') { steps { withCredentials([string(credentialsId: 'github-cloudtool-write-token', variable: 'GITHUB_TOKEN')]) { sh '''set -eu
+      worktree="$(mktemp -d)"
+      trap 'rm -rf "$worktree"' EXIT
+      branch="release/${ACTION}-${RESOLVED_COMPONENTS//,/-}-${RESOLVED_IMAGE_TAG}-${BUILD_NUMBER}"
+      git clone --depth 1 --branch gitops-prod "https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOSITORY.git" "$worktree"
+      cd "$worktree"
+      git switch -c "$branch"
+      case ",$RESOLVED_COMPONENTS," in *,frontend,*) sed -i -E '/name: ghcr.io\/ducanhslvp\/cloudtool-frontend/,+1 s/(newTag: )[0-9a-f]{12}/\\1'"$RESOLVED_IMAGE_TAG"'/' infra/gitops/cloudtool-prod/kustomization.yaml ;; esac
+      case ",$RESOLVED_COMPONENTS," in *,backend,*) sed -i -E '/name: ghcr.io\/ducanhslvp\/cloudtool-backend/,+1 s/(newTag: )[0-9a-f]{12}/\\1'"$RESOLVED_IMAGE_TAG"'/' infra/gitops/cloudtool-prod/kustomization.yaml ;; esac
+      case ",$RESOLVED_COMPONENTS," in *,agent-service,*) sed -i -E '/name: ghcr.io\/ducanhslvp\/cloudtool-agent-service/,+1 s/(newTag: )[0-9a-f]{12}/\\1'"$RESOLVED_IMAGE_TAG"'/' infra/gitops/cloudtool-prod/kustomization.yaml ;; esac
+      git config user.name 'cloudtool-jenkins[bot]'
+      git config user.email 'cloudtool-jenkins[bot]@users.noreply.github.com'
+      git add infra/gitops/cloudtool-prod/kustomization.yaml
+      git diff --cached --quiet && { echo 'Target tag is already live; no release PR created.'; exit 0; }
+      git commit -m "gitops(prod): ${ACTION} ${RESOLVED_COMPONENTS} $RESOLVED_IMAGE_TAG"
+      git push origin "HEAD:$branch"
+      payload=$(printf '{"title":"Production %s %s: %s","head":"%s","base":"gitops-prod","body":"Created by Jenkins build %s. Components: %s. Review the immutable image tag and merge to deploy via Argo CD."}' "$ACTION" "$RESOLVED_COMPONENTS" "$RESOLVED_IMAGE_TAG" "$branch" "$BUILD_URL" "$RESOLVED_COMPONENTS")
+      response=$(curl --fail --silent --show-error -X POST "https://api.github.com/repos/$REPOSITORY/pulls" \
+        -H "Authorization: Bearer $GITHUB_TOKEN" -H 'Accept: application/vnd.github+json' -H 'Content-Type: application/json' \
+        -d "$payload")
+      printf '%s\\n' "$response" | sed -n 's/.*"html_url": "\\([^"]*\\)".*/Production PR: \\1/p' | head -1''' } } }
+  }
+}

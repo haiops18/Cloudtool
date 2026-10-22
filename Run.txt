@@ -1,0 +1,18 @@
+###### backend ######
+.venv\Scripts\activate
+
+Set-Location .\backend; .\.venv\Scripts\python.exe -m uvicorn app.terraform_app:app --host 127.0.0.1 --port 8000 --reload
+
+uvicorn app.terraform_app:app --host 127.0.0.1 --port 8000 --reload
+
+###### terraform service ######
+Set-Location .\terraform; .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8100 --reload
+
+###### frontend ######
+Set-Location .\frontend; npm run dev
+
+###### optional mock Cloud API ######
+.\backend\.venv\Scripts\python.exe -m uvicorn mock_cloud_api.app:app --host 127.0.0.1 --port 9000
+
+###### kill port ######
+for /f "tokens=5" %a in ('netstat -ano ^| findstr :8000') do taskkill /F /PID %a

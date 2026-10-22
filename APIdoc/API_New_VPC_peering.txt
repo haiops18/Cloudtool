@@ -1,0 +1,93 @@
+- Header for all API: 
+- Authorization: Token xxxxxxxxxxxx
+	(Với xxxxxxxxxxxx là chuỗi tocken mà người dùng có)
+- project-id: yyyyyyyyyyy
+	(Với yyyyyyyyyyy là project id mà người dùng đang chọn, và luôn truyền với mọi API)
+
+
+==== API get VPC peering connection ====
+- method: GET
+- api_link: /infra/vpc-peerings/?page=1&page_size=10
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "307eaba2-1c10-4906-956c-648a018a8c8e",
+            "name": "peer-307eaba2-1c10-4906-956c-648a018a8c8e",
+            "display_name": "peer-307eaba2-1c10-4906-956c-648a018a8c8e",
+            "description": "",
+            "requester_vpc": {
+                "id": "7591aac3-e4d1-4168-a294-91b9b60a861c",
+                "display_name": "K8S - VPC - 10.10.0.0/16",
+                "name": "K8S - VPC"
+            },
+            "accepter_vpc": {
+                "id": "14a657f1-aeaf-4673-9fd0-645eaf632c0d",
+                "display_name": "Demo-VPC - 10.5.0.0/16",
+                "name": "Demo-VPC"
+            },
+            "requester_project": {
+                "id": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+                "name": "Hieutm28_Test",
+                "slug": "tiennt48-sp-qgypa3j9vr",
+                "description": "",
+                "organization_id": "04e54204-3a72-4c3c-ba98-9ae3c75b1534"
+            },
+            "accepter_project": {
+                "id": "b62eabff-7648-484a-bed1-e8cc8dd6c2bb",
+                "name": "opnsense-firewall",
+                "slug": "opnsense-firewall-9i3vb7yzc5",
+                "description": "Dự án POC Firewall OPNSense",
+                "organization_id": null
+            },
+            "status": "active",
+            "created_at": "2024-12-25T03:53:52.455003Z",
+            "updated_at": "2024-12-25T03:54:58.805536Z"
+        }
+    ]
+}
+- status code: 200
+
+==== API create VPC peering connection ====
+- method: POST
+- api_link: /infra/vpc-peerings/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{"requester_vpc":"e3733b50-22f5-4fee-853f-38f6ff9196cf","accepter_vpc":"387ffb7b-ee71-4178-8425-60bbe01ef415","description":""}
+- response:
+{
+    "id": "de81ab37-3a51-4bdf-9766-d575de117cbf",
+    "name": "peer-de81ab37-3a51-4bdf-9766-d575de117cbf",
+    "display_name": "peer-de81ab37-3a51-4bdf-9766-d575de117cbf",
+    "description": "",
+    "requester_vpc": "e3733b50-22f5-4fee-853f-38f6ff9196cf",
+    "accepter_vpc": "387ffb7b-ee71-4178-8425-60bbe01ef415",
+    "requester_project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+    "accepter_project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+    "status": "pending",
+    "created_at": "2026-10-13T02:27:10.012660Z",
+    "updated_at": "2026-10-13T02:27:10.012677Z"
+}
+- status code: 201 Created
+
+==== API accept VPC peering connection ====
+- method: POST
+- api_link: infra/vpc-peerings/de81ab37-3a51-4bdf-9766-d575de117cbf/accept/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- status code: 202 Accepted
+
+==== API reject VPC peering connection ====
+- method: POST
+- api_link: infra/vpc-peerings/de81ab37-3a51-4bdf-9766-d575de117cbf/reject/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- status code: 202 Accepted
+
+==== API Delete VPC peering connection ====
+- method: DELETE
+- api_link: infra/vpc-peerings/de81ab37-3a51-4bdf-9766-d575de117cbf/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- status code: 204 No Content

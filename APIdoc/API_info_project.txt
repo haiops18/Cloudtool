@@ -1,0 +1,417 @@
+- Header for all API: 
+- Authorization: Token xxxxxxxxxxxx
+	(Với xxxxxxxxxxxx là chuỗi tocken mà người dùng có)
+- project-id: yyyyyyyyyyy
+	(Với yyyyyyyyyyy là project id mà người dùng đang chọn, và luôn truyền với mọi API)
+
+
+------------------------ List API để chọn organization hoặc cá nhân, sau đó có thể chọn được project và truyền project-id vào header từng API sau đó ----
+- 1 organization sẽ có nhiều project
+- 1 cá nhân cũng có nhiều project
+- Ban đầu sẽ chọn lấy danh sách project từ organization hoặc cá nhân
+
+===== API Get list organization ====
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/tenant/organization/?page_size=10&page=1
+- response:
+{
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "04e54204-3a72-4c3c-ba98-9ae3c75b1534",
+            "name": "VTS_PublicCloud",
+            "display_name": "vts-cntt-1rwe9xxvj2",
+            "slug": "vts-cntt-1rwe9xxvj2",
+            "description": "",
+            "root": "387cf4c0-5aad-4465-924f-5d7125b2dc73",
+            "logo": null,
+            "domain": null,
+            "owner": "0024ce0f-6839-4d9d-b7ab-9689bc98e80b",
+            "verified": true,
+            "created_at": "2024-12-16T10:36:33.818619Z",
+            "updated_at": "2025-01-13T02:32:53.084389Z"
+        }
+    ]
+}
+
+==== API Get list project by organization_id ===
+- organization_id: 04e54204-3a72-4c3c-ba98-9ae3c75b1534
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/tenant/projects/?page_size=10&page=1&organization=04e54204-3a72-4c3c-ba98-9ae3c75b1534
+- response:
+{
+    "count": 219,
+    "next": "https://api.cmp.vcloud:8000/tenant/projects/?organization=04e54204-3a72-4c3c-ba98-9ae3c75b1534&page=2&page_size=10",
+    "previous": null,
+    "results": [
+        {
+            "id": "2766fc85-dd8b-45d2-a832-c41d2200e13e",
+            "display_name": "ad-vpqh-si-o7asre47id",
+            "url": "https://api.cmp.vcloud:8000/tenant/projects/2766fc85-dd8b-45d2-a832-c41d2200e13e/",
+            "name": "AD_VPQH_Quantt10stssooneppecalTes",
+            "slug": "ad-vpqh-si-o7asre47id",
+            "description": "",
+            "enable_iam": true,
+            "directory": "387cf4c0-5aad-4465-924f-5d7125b2dc73",
+            "path": [
+                {
+                    "id": "387cf4c0-5aad-4465-924f-5d7125b2dc73",
+                    "name": "VTS_CNTT"
+                }
+            ],
+            "organization": {
+                "id": "04e54204-3a72-4c3c-ba98-9ae3c75b1534",
+                "name": "VTS_PublicCloud",
+                "slug": "vts-cntt-1rwe9xxvj2",
+                "logo": null
+            },
+            "label": null,
+            "status": "active",
+            "has_billing_plan": true,
+            "has_payg_subscription": false,
+            "has_vrp_plan": true
+        }
+    ]
+}
+- status code: 200 OK
+
+==== API Get list my project ====
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/tenant/projects/?page_size=10&page=1&direct_access=true
+- response:
+{
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "22a4c180-8fac-4ba2-a281-6824b60354aa",
+            "display_name": "devtest-cucquankhi-7uibee22fc",
+            "url": "https://api.cmp.vcloud:8000/tenant/projects/22a4c180-8fac-4ba2-a281-6824b60354aa/",
+            "name": "DevTest_Cucquankhi",
+            "slug": "devtest-cucquankhi-7uibee22fc",
+            "description": "",
+            "enable_iam": true,
+            "directory": "387cf4c0-5aad-4465-924f-5d7125b2dc73",
+            "path": [
+                {
+                    "id": "387cf4c0-5aad-4465-924f-5d7125b2dc73",
+                    "name": "VTS_CNTT"
+                }
+            ],
+            "organization": {
+                "id": "04e54204-3a72-4c3c-ba98-9ae3c75b1534",
+                "name": "VTS_PublicCloud",
+                "slug": "vts-cntt-1rwe9xxvj2",
+                "logo": null
+            },
+            "label": {
+                "id": "0cd55ad4-21ed-424a-b9b1-9cdf10614635",
+                "name": "PoC",
+                "description": "Project phục vụ PoC"
+            },
+            "status": "active",
+            "has_billing_plan": true,
+            "has_payg_subscription": false,
+            "has_vrp_plan": true
+        }
+    ]
+}
+- status code: 200 OK
+
+
+==== API Get List Server of project ===
+- project_id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/?page_size=10&page=1
+- header: project-id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+- response:
+{
+    "count": 2,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "f4b79e38-06b7-42d6-8076-68dba9e1279f",
+            "name": "2026_app_ko_xoa",
+            "server_type": "on_demand",
+            "power_state": "running",
+            "zone": "12522f05-dbe6-4fd3-8211-a8f95dcb0848",
+            "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+            "elastic_ip": [
+                {
+                    "id": "1cf45533-ac80-4c52-a327-2586cff1c83e",
+                    "display_name": "171.254.94.173",
+                    "created_at": "2026-07-09T07:37:55.529071Z",
+                    "updated_at": "2026-07-29T01:25:42.115306Z",
+                    "ip_address": "171.254.94.173",
+                    "ipv6_address": null,
+                    "enable_ipv4": true,
+                    "enable_ipv6": false,
+                    "mac_address": "fa:16:3e:76:55:89",
+                    "status": "active",
+                    "allowed_cidrs": [],
+                    "port_security": true,
+                    "network": null,
+                    "zone": null,
+                    "baremetal_instance": null,
+                    "allowed_vips": []
+                }
+            ],
+            "private_ip": [
+                {
+                    "id": "58f73290-11f6-421e-ad05-1bc8dad877c0",
+                    "description": null,
+                    "subnet": "cbb0cbbe-7be2-4b96-991f-775044cb6ea4",
+                    "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+                    "device_owner": "user",
+                    "region": "vn-central-1",
+                    "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+                    "ip_address": "10.60.160.15",
+                    "mac_address": "fa:16:3e:68:9f:c5",
+                    "server": {
+                        "id": "f4b79e38-06b7-42d6-8076-68dba9e1279f",
+                        "name": "2026_app_ko_xoa",
+                        "display_name": "2026_app_ko_xoa"
+                    },
+                    "created_at": "2026-07-09T03:48:41.794986Z",
+                    "updated_at": "2026-07-09T03:48:41.794995Z",
+                    "display_name": "10.60.160.15",
+                    "vips": [],
+                    "vpc_id": "886f39b9-8c27-427c-ac31-2f3f158b7b02"
+                }
+            ],
+            "bandwidth": 300
+        }
+    ]
+}
+- status code: 200 OK
+
+==== API Get List Zone ===
+- project_id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/organization/zones/?page=1&page_size=200
+- header: project-id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+- response:
+{
+    "count": 4,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "12522f05-dbe6-4fd3-8211-a8f95dcb0848",
+            "url": "https://api.cmp.vcloud:8000/organization/zones/12522f05-dbe6-4fd3-8211-a8f95dcb0848/",
+            "name": "vn-central-1a",
+            "display_name": "vn-central-1a",
+            "description": "",
+            "region": {
+                "id": "e787f5f1-045b-4b2b-97a8-805d374be494",
+                "url": "https://api.cmp.vcloud:8000/organization/regions/e787f5f1-045b-4b2b-97a8-805d374be494/",
+                "name": "vn-central-1",
+                "display_name": "vn-central-1",
+                "visibility": "public",
+                "description": ""
+            }
+        }
+    ]
+}
+- status code: 200 OK
+
+==== API Get Detail of server ===
+- project_id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+- server_id: b17e39c7-8b4d-4c03-a3fd-0ce5a3923149
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/b17e39c7-8b4d-4c03-a3fd-0ce5a3923149/
+- header: project-id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+- response: 
+{
+    "id": "b17e39c7-8b4d-4c03-a3fd-0ce5a3923149",
+    "name": "2026_app",
+    "description": "",
+    "server_type": "on_demand",
+    "image": "32d85c2b-ce46-44dc-82f2-7844abe91de9",
+    "image_name": "Ubuntu 24.04 VTS 2",
+    "flavor": {
+        "id": "e4886249-52b5-41ed-8687-09152a9a8333",
+        "name": "custom-6C-12GB",
+        "description": "custom",
+        "region": "e787f5f1-045b-4b2b-97a8-805d374be494",
+        "zone": "12522f05-dbe6-4fd3-8211-a8f95dcb0848",
+        "dpc": null,
+        "ram": 12,
+        "vcpus": 6,
+        "gpu_ram": 0,
+        "gpu_model": "",
+        "gpus": 0,
+        "family": "basic",
+        "metadata": {},
+        "status": "enabled",
+        "created_at": "2023-10-04T07:40:20.745037Z",
+        "updated_at": "2023-10-04T07:42:53.643052Z",
+        "display_name": "custom-6C-12GB (CPU: 6, RAM: 12)",
+        "display": false
+    },
+    "security_groups": [
+        {
+            "id": "1ba03f5e-45f6-4605-b6d4-188373492111",
+            "name": "2026_SG_All",
+            "display_name": "2026_SG_All"
+        },
+        {
+            "id": "2a319f0e-953d-48cd-a09b-ee088ee0e337",
+            "name": "2026_SG_App",
+            "display_name": "2026_SG_App"
+        }
+    ],
+    "status": "active",
+    "power_state": "running",
+    "key_pair": {
+        "id": "6116f7bb-6306-4d60-a453-92f12b00ea78",
+        "name": "2026_KeyPair",
+        "type": "rsa",
+        "public_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7Gif6MeKMjxsFdzZjDFbvom8hux+x2aV+ES6JD+/pnAkx+eLmqauay5QtXTxcyLeLvnOX6JXOO01IjqCjjKYHeE0tj8P7/yxFIlRjxzxpAw07tal0YAY17T6wfEeisT1ML4dWJ/iUQbZx3Tm5QMTfFJG0rnbnwJb2oSkGa+9ZTAJqKnagx4kgJlQowR7gRqV0qqxX7Iv8Js44PU/CLmwYMuCcEYGYWqtrgA9HlIqbrItdjFE4pwkakDtUFeeSNTWQjFqBqlYHtgFlV1EPfv5vSAuf62XkRo6WeQg1vlEO43Qe2H41jpRfxcCBCSW1GX7acdyYh52vcYxa9/qSwXjV Generated-by-ViettelCloud",
+        "display_name": "2026_KeyPair",
+        "fingerprint": "31:be:df:02:c4:10:91:71:e9:ee:1a:2a:78:66:4d:09",
+        "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+        "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+        "created_at": "2026-07-07T04:36:37.599634Z",
+        "updated_at": "2026-07-07T04:36:37.599650Z"
+    },
+    "user_data": "",
+    "zone": "12522f05-dbe6-4fd3-8211-a8f95dcb0848",
+    "dpc": null,
+    "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+    "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+    "elastic_ip": [],
+    "private_ip": [
+        {
+            "id": "a348dfe2-a26f-44d6-94a9-f6cb99298d5f",
+            "description": null,
+            "subnet": "cbb0cbbe-7be2-4b96-991f-775044cb6ea4",
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+            "device_owner": "user",
+            "region": "vn-central-1",
+            "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+            "ip_address": "10.60.160.60",
+            "mac_address": "fa:16:3e:62:f3:ad",
+            "server": {
+                "id": "b17e39c7-8b4d-4c03-a3fd-0ce5a3923149",
+                "name": "2026_app",
+                "display_name": "2026_app"
+            },
+            "created_at": "2026-07-07T04:51:52.858844Z",
+            "updated_at": "2026-07-07T04:51:52.858854Z",
+            "display_name": "10.60.160.60",
+            "vips": [],
+            "vpc_id": "886f39b9-8c27-427c-ac31-2f3f158b7b02"
+        }
+    ],
+    "volumes": [
+        {
+            "volume": {
+                "id": "36843e98-463d-424e-9ebd-d969e07a1bd8",
+                "name": "b17e39c7-8b4d-4c03-a3fd-0ce5a3923149-volume-1",
+                "display_name": "b17e39c7-8b4d-4c03-a3fd-0ce5a3923149-volume-1",
+                "size": "50",
+                "status": "in-use",
+                "disk_type": "ssd",
+                "speed": "50k"
+            },
+            "mount_as": "root"
+        },
+        {
+            "volume": {
+                "id": "7bf3d6ee-5d21-4a2c-b5ca-376effc2fb31",
+                "name": "b17e39c7-8b4d-4c03-a3fd-0ce5a3923149-volume-2",
+                "display_name": "b17e39c7-8b4d-4c03-a3fd-0ce5a3923149-volume-2",
+                "size": "50",
+                "status": "in-use",
+                "disk_type": "hdd",
+                "speed": "20k"
+            },
+            "mount_as": "data"
+        }
+    ],
+    "created_at": "2026-07-07T04:51:52.685537Z",
+    "placement_group": {
+        "id": "245d28a3-f191-43e7-9d65-9b5bd5f70af0",
+        "display_name": "2026_PG_Anti_Aff",
+        "name": "2026_PG_Anti_Aff",
+        "description": "anhnd192 test",
+        "policy": "anti-affinity",
+        "server_count": 2,
+        "region": "e787f5f1-045b-4b2b-97a8-805d374be494",
+        "created_at": "2026-07-07T04:37:19.617580Z",
+        "updated_at": "2026-07-07T04:37:19.617602Z",
+        "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+        "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261"
+    },
+    "bandwidth": 300
+}
+- status code: 200 OK
+
+
+----------------- List API tương tác với từng server -----------------------------
+
+===== API open server console ====
+- server_id_need_to_open_console: b17e39c7-8b4d-4c03-a3fd-0ce5a3923149
+- project_id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/b17e39c7-8b4d-4c03-a3fd-0ce5a3923149/console/
+- header: project-id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+- response:
+{
+    "url": "https://vnc.viettelcloud.vn/vn-central-1/vnc_lite.html?path=vn-central-1/websockify?token=b998818e-360c-497a-8fc7-f1a"
+}
+- status code: 200 OK
+- description:
+ + response có "url" là link mở tab mới của trình duyệt để truy cập trực tiếp vào console của server
+
+===== API Change Password server =====
+- server_id: b17e39c7-8b4d-4c03-a3fd-0ce5a3923149
+- project_id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+- new_password: abcd@123 (password cần > 8 ký tự kèm ký tự hoa, số, chữ, ký tự đặc biệt)
+
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/b17e39c7-8b4d-4c03-a3fd-0ce5a3923149/change-password/
+- header: project-id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+- request_body:
+{
+    "new_password": "abcd@123"
+}
+- status code:
+202 OK
+404 error at message body
+
+===== API attach ip_address to server ====
+- Server_id need to attach: 3f43bd15-cf54-4791-8c3d-7f485d26587d
+- project_id has server_id: fef1e748-f1f3-4b1f-9b55-a564c9abe8f8
+- ip_address_id: 7a5cf360-66c9-427f-88da-8306ac573775
+
+- method: POST
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/3f43bd15-cf54-4791-8c3d-7f485d26587d/attach-privateip/
+- header: project-id: fef1e748-f1f3-4b1f-9b55-a564c9abe8f8
+- request
+	{"privateip":"7a5cf360-66c9-427f-88da-8306ac573775"}
+- status code: 200 OK
+
+===== API change name of server ====
+- Server_id need to change: b17e39c7-8b4d-4c03-a3fd-0ce5a3923149
+- project_id has server_id: fef1e748-f1f3-4b1f-9b55-a564c9abe8f8
+
+- method: PATCH
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/servers/b17e39c7-8b4d-4c03-a3fd-0ce5a3923149/
+- header: project-id: fef1e748-f1f3-4b1f-9b55-a564c9abe8f8
+- request
+	{name: "2026_app_1"}
+- response: tương tự với ==== API Get Detail of server ===
+- status code: 200 OK
+

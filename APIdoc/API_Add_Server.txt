@@ -1,0 +1,275 @@
+- Header for all API: 
+- Authorization: Token xxxxxxxxxxxx
+	(Với xxxxxxxxxxxx là chuỗi tocken mà người dùng có)
+- project-id: yyyyyyyyyyy
+	(Với yyyyyyyyyyy là project id mà người dùng đang chọn, và luôn truyền với mọi API)
+
+==== API Get List Zone ===
+- project_id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/organization/zones/?page=1&page_size=200
+- header: project-id: 285c9b2f-55c8-4a97-a7ca-a89277bd9261
+- response:
+{
+    "count": 4,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "12522f05-dbe6-4fd3-8211-a8f95dcb0848",
+            "url": "https://api.cmp.vcloud:8000/organization/zones/12522f05-dbe6-4fd3-8211-a8f95dcb0848/",
+            "name": "vn-central-1a",
+            "display_name": "vn-central-1a",
+            "description": "",
+            "region": {
+                "id": "e787f5f1-045b-4b2b-97a8-805d374be494",
+                "url": "https://api.cmp.vcloud:8000/organization/regions/e787f5f1-045b-4b2b-97a8-805d374be494/",
+                "name": "vn-central-1",
+                "display_name": "vn-central-1",
+                "visibility": "public",
+                "description": ""
+            }
+        }
+    ]
+}
+- status code: 200 OK
+
+
+==== API get flavors ====
+- zone_id: 12522f05-dbe6-4fd3-8211-a8f95dcb0848
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/flavors/?family=basic&zone=12522f05-dbe6-4fd3-8211-a8f95dcb0848&dpc__null=true
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 119,
+    "next": "https://api.cmp.vcloud:8000/infra/flavors/?dpc__null=true&family=basic&page=2&zone=12522f05-dbe6-4fd3-8211-a8f95dcb0848",
+    "previous": null,
+    "results": [
+        {
+            "id": "32bc0da6-317c-40b8-ba4f-7a55796f3175",
+            "name": "b3.metal",
+            "display_name": "b3.metal (CPU: 12, RAM: 32)",
+            "region": "e787f5f1-045b-4b2b-97a8-805d374be494",
+            "zone": "12522f05-dbe6-4fd3-8211-a8f95dcb0848",
+            "ram": 32,
+            "vcpus": 12,
+            "gpu_model": "",
+            "gpu_ram": 0,
+            "gpus": 0,
+            "family": "basic"
+        }
+    ]
+}
+
+- status code: 200
+
+==== API Get server Image =====
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/images/?type=server
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 111,
+    "next": "https://api.cmp.vcloud:8000/infra/images/?page=2&type=server",
+    "previous": null,
+    "results": [
+        {
+            "id": "93f53087-e77e-438f-91eb-595addc68980",
+            "name": "Ubuntu-24.04-VTS-2026",
+            "display_name": "Ubuntu 24.04 VTS 2026",
+            "os": "Ubuntu",
+            "version": "24.04 VTS 2026",
+            "min_volume_size": 50,
+            "type": "server"
+        }
+    ]
+}
+
+- status code: 200
+
+==== API Get Key pairs =====
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/keypairs/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 2,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "6116f7bb-6306-4d60-a453-92f12b00ea78",
+            "name": "2026_KeyPair",
+            "type": "rsa",
+            "public_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABA/qSwXjV Generated-by-ViettelCloud",
+            "display_name": "2026_KeyPair",
+            "fingerprint": "31:be:df:02:c4:10:91:71:e9:ee:1a:2a:78:66:4d:09",
+            "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+            "created_at": "2026-07-07T04:36:37.599634Z",
+            "updated_at": "2026-07-07T04:36:37.599650Z"
+        }
+    ]
+}
+
+- status code: 200
+
+==== API Get VPC =====
+- method: GET
+- region_id=e787f5f1-045b-4b2b-97a8-805d374be494
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/vpcs/?region_id=e787f5f1-045b-4b2b-97a8-805d374be494
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 5,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "886f39b9-8c27-427c-ac31-2f3f158b7b02",
+            "name": "2026_VPC_Test",
+            "description": "anhnd192 test",
+            "cidr": "10.60.160.0/24",
+            "region": "e787f5f1-045b-4b2b-97a8-805d374be494",
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+            "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+            "shared_projects": [],
+            "created_at": "2026-07-07T04:39:42.917994Z",
+            "updated_at": "2026-07-07T04:39:47.698113Z",
+            "route_tables": [
+                "b2fa41e5-dc6e-4c95-bddb-d28284a464c5"
+            ],
+            "internet_access": false,
+            "display_name": "2026_VPC_Test - 10.60.160.0/24"
+        }
+    ]
+}
+
+- status code: 200
+
+==== API get Subnet ====
+- project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/subnets/?page=1&page_size=10
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 5,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "d4cf3098-181a-43ce-be13-4bc3eecea490",
+            "name": "CNTT_MONITOR_2",
+            "description": "Created by CMP",
+            "vpc": {
+                "id": "7f8a5d05-48ef-4e5e-93d8-1ee8906cd642",
+                "display_name": "CNTT_MONITOR_2 - 10.129.24.0/21",
+                "name": "CNTT_MONITOR_2"
+            },
+            "cidr": "10.129.24.0/21",
+            "region": "vn-north-1",
+            "owner": null,
+            "project": "fdad79fd-c4c7-413f-90a4-c057ab96e29f",
+            "created_at": "2026-01-06T09:22:22.443411Z",
+            "updated_at": "2026-01-06T09:22:22.443432Z",
+            "display_name": "CNTT_MONITOR_2 - 10.129.24.0/21"
+        }
+    ]
+}
+
+==== API Get security-groups =====
+- method: GET
+- region_id=e787f5f1-045b-4b2b-97a8-805d374be494
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/security-groups/?region_id=e787f5f1-045b-4b2b-97a8-805d374be494
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 5,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "1ba03f5e-45f6-4605-b6d4-188373492111",
+            "name": "2026_SG_All",
+            "display_name": "2026_SG_All",
+            "created_at": "2026-07-07T03:19:43.551819Z",
+            "updated_at": "2026-07-07T04:46:12.379428Z",
+            "description": "",
+            "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+            "region": "e787f5f1-045b-4b2b-97a8-805d374be494",
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0"
+        }
+    ]
+}
+
+- status code: 200
+
+==== API get volume type ====
+- zone_id: 12522f05-dbe6-4fd3-8211-a8f95dcb0848
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/volume-type/?zone=12522f05-dbe6-4fd3-8211-a8f95dcb0848&status=enabled&encryption_key_size=0
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 4,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "dd6e1dc5-98ed-407f-ba0b-caac9ec161c2",
+            "name": "Multiattach_Ceph_SSD",
+            "display_name": "Multiattach_Ceph_SSD",
+            "description": null,
+            "zone": "12522f05-dbe6-4fd3-8211-a8f95dcb0848",
+            "speed": "50k",
+            "disabled_reason": null,
+            "state": "up",
+            "status": "enabled",
+            "disk_type": "ssd",
+            "encryption_key_size": "0",
+            "created_at": "2025-10-10T08:09:27.405742Z",
+            "updated_at": "2026-07-07T03:34:25.332483Z",
+            "volume_backend_name": "ceph_ssd",
+            "max_volume_size": 8000,
+            "multiattach": true
+        }
+    ]
+}
+
+- status code: 200
+
+==== API get placementgroups ====
+- region=e787f5f1-045b-4b2b-97a8-805d374be494
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/infra/placementgroups/?region=e787f5f1-045b-4b2b-97a8-805d374be494
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- response:
+{
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "245d28a3-f191-43e7-9d65-9b5bd5f70af0",
+            "display_name": "2026_PG_Anti_Aff",
+            "name": "2026_PG_Anti_Aff",
+            "description": "anhnd192 test",
+            "policy": "anti-affinity",
+            "server_count": 3,
+            "region": "e787f5f1-045b-4b2b-97a8-805d374be494",
+            "created_at": "2026-07-07T04:37:19.617580Z",
+            "updated_at": "2026-07-07T04:37:19.617602Z",
+            "owner": "28ceab54-71ad-4897-9900-e5c697c62cb0",
+            "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261"
+        }
+    ]
+}
+
+- status code: 200

@@ -1,0 +1,79 @@
+pipeline {
+  agent any
+  options { disableConcurrentBuilds(); timestamps(); buildDiscarder(logRotator(numToKeepStr: '30')); timeout(time: 20, unit: 'MINUTES') }
+  parameters {
+    choice(name: 'ACTION', choices: ['promote', 'rollback'], description: 'Promote or rollback an immutable Harbor image.')
+    choice(name: 'COMPONENTS', choices: ['auto', 'frontend', 'backend', 'agent-service', 'frontend,backend', 'frontend,agent-service', 'backend,agent-service', 'all'], description: 'Components to release.')
+    string(name: 'IMAGE_TAG', trim: true, description: 'Required for rollback.')
+  }
+  environment { HARBOR_REGISTRY = '10.60.160.6'; HARBOR_PROJECT = 'cloudtool'; REPOSITORY = 'ducanhslvp/CloudTool' }
+  stages {
+    stage('Select release candidate') {
+      steps {
+        script {
+          if (params.ACTION == 'promote') {
+            def candidate = sh(script: 'set -eu; . "$JENKINS_HOME/cloudtool-release/latest-harbor-candidate"; printf "%s|%s" "$tag" "$components"', returnStdout: true).trim().tokenize('|')
+            env.RESOLVED_IMAGE_TAG = candidate[0]
+            env.CANDIDATE_COMPONENTS = candidate[1]
+            env.RESOLVED_COMPONENTS = params.COMPONENTS == 'auto' ? env.CANDIDATE_COMPONENTS : (params.COMPONENTS == 'all' ? 'frontend,backend,agent-service' : params.COMPONENTS)
+            for (component in env.RESOLVED_COMPONENTS.tokenize(',')) { if (!env.CANDIDATE_COMPONENTS.tokenize(',').contains(component)) { error('Component was not built by the latest Harbor CI candidate.') } }
+          } else {
+            if (!params.IMAGE_TAG?.trim()) { error('IMAGE_TAG is required for rollback.') }
+            if (params.COMPONENTS == 'auto') { error('Choose components for rollback.') }
+            env.RESOLVED_IMAGE_TAG = params.IMAGE_TAG.trim()
+            env.RESOLVED_COMPONENTS = params.COMPONENTS == 'all' ? 'frontend,backend,agent-service' : params.COMPONENTS
+          }
+        }
+      }
+    }
+    stage('Validate Harbor images') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'harbor-cloudtool-write', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_TOKEN')]) {
+          sh '''
+            set -eu
+            case "$RESOLVED_IMAGE_TAG" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) exit 2 ;; esac
+            printf '%s' "$HARBOR_TOKEN" | docker login "https://$HARBOR_REGISTRY" -u "$HARBOR_USER" --password-stdin
+            case ",$RESOLVED_COMPONENTS," in *,frontend,*) docker manifest inspect "$HARBOR_REGISTRY/$HARBOR_PROJECT/cloudtool-frontend:$RESOLVED_IMAGE_TAG" >/dev/null ;; esac
+            case ",$RESOLVED_COMPONENTS," in *,backend,*) docker manifest inspect "$HARBOR_REGISTRY/$HARBOR_PROJECT/cloudtool-backend:$RESOLVED_IMAGE_TAG" >/dev/null ;; esac
+            case ",$RESOLVED_COMPONENTS," in *,agent-service,*) docker manifest inspect "$HARBOR_REGISTRY/$HARBOR_PROJECT/cloudtool-agent-service:$RESOLVED_IMAGE_TAG" >/dev/null ;; esac
+            docker logout "$HARBOR_REGISTRY" >/dev/null
+          '''
+        }
+      }
+    }
+    stage('Create reviewed GitOps pull request') {
+      steps {
+        withCredentials([string(credentialsId: 'github-cloudtool-write-token', variable: 'GITHUB_TOKEN')]) {
+          sh '''
+            set -eu
+            worktree="$(mktemp -d)"; trap 'rm -rf "$worktree"' EXIT
+            branch="release-${ACTION}-${RESOLVED_COMPONENTS//,/-}-${RESOLVED_IMAGE_TAG}-${BUILD_NUMBER}"
+            git clone --depth 1 --branch gitops-prod "https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOSITORY.git" "$worktree"
+            cd "$worktree"; git switch -c "$branch"
+            update_image() {
+              component="$1"
+              sed -i -E "s#^  - name: (ghcr.io/ducanhslvp/|10.60.160.6/cloudtool/)?cloudtool-${component}$#  - name: ${HARBOR_REGISTRY}/${HARBOR_PROJECT}/cloudtool-${component}#" infra/gitops/cloudtool-prod/kustomization.yaml
+              sed -i -E "/cloudtool-${component}$/,+1 s#(newTag: )[0-9a-f]{12}#\\1${RESOLVED_IMAGE_TAG}#" infra/gitops/cloudtool-prod/kustomization.yaml
+              sed -i -E "s#image: ([^ ]*/)?cloudtool-${component}:REPLACE_TAG#image: ${HARBOR_REGISTRY}/${HARBOR_PROJECT}/cloudtool-${component}:REPLACE_TAG#" infra/kubernetes/production/application.yaml
+            }
+            case ",$RESOLVED_COMPONENTS," in *,frontend,*) update_image frontend ;; esac
+            case ",$RESOLVED_COMPONENTS," in *,backend,*) update_image backend ;; esac
+            case ",$RESOLVED_COMPONENTS," in *,agent-service,*) update_image agent-service ;; esac
+            # Keep both registry credentials available. The image reference selects
+            # which registry is used; GHCR workloads must continue working while
+            # selected components are promoted from Harbor.
+            sed -i -E "s#imagePullSecrets:.*#imagePullSecrets: [{ name: ghcr-pull }, { name: harbor-pull }]#g" infra/kubernetes/production/application.yaml
+            git config user.name 'cloudtool-jenkins[bot]'; git config user.email 'cloudtool-jenkins[bot]@users.noreply.github.com'
+            git add infra/gitops/cloudtool-prod/kustomization.yaml infra/kubernetes/production/application.yaml
+            git diff --cached --quiet && { echo "No GitOps change required."; exit 0; }
+            git commit -m "gitops(prod): Harbor ${ ACTION} ${RESOLVED_COMPONENTS} ${RESOLVED_IMAGE_TAG}"
+            git push origin "HEAD:$branch"
+            payload=$(printf '{"title":"Production Harbor %s %s: %s","head":"%s","base":"gitops-prod","body":"Review immutable Harbor image tags before merge."}' "$ACTION" "$RESOLVED_COMPONENTS" "$RESOLVED_IMAGE_TAG" "$branch")
+            curl --fail --silent --show-error -X POST "https://api.github.com/repos/$REPOSITORY/pulls" -H "Authorization: Bearer $GITHUB_TOKEN" -H 'Accept: application/vnd.github+json' -H 'Content-Type: application/json' -d "$payload"
+          '''
+        }
+      }
+    }
+  }
+}
+

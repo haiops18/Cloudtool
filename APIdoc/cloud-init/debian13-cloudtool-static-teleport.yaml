@@ -1,0 +1,440 @@
+#cloud-config
+package_update: true
+packages: [ca-certificates, curl, ifupdown, iproute2, resolvconf]
+
+write_files:
+  - path: /usr/local/sbin/cloudtool-set-hostname.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      server_name='{{server_name}}'
+      [ -n "$server_name" ] || { echo 'server_name is required' >&2; exit 1; }
+      hostnamectl set-hostname "$server_name"
+      printf '%s [hostname] SUCCESS hostname=%s\n' "$(date -u +%FT%TZ)" "$server_name"
+  - path: /usr/local/sbin/cloudtool-static-ip.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      LOG_DIR=/var/log/cloudtool
+      LOG_FILE="$LOG_DIR/static-ip.log"
+      NETWORK_DIR=/etc/network
+      INTERFACES_FILE="$NETWORK_DIR/interfaces"
+      BACKUP_ROOT=/var/backups/cloudtool/networking
+      LOCK_FILE=/run/cloudtool-static-ip.lock
+      ELASTIC_ENABLED='{{elastic_ip_enabled}}' ELASTIC_IP='{{elastic_ip_address}}'
+      LOCAL_IP='{{private_ip}}' LOCAL_GATEWAY='{{local_gateway}}'
+      VPC_CIDR='{{vpc_cidr}}'
+      TELEPORT_ENABLED='{{TELEPORT_ENABLE}}' MONITOR_IP='{{TP_MONITOR_IP}}'
+      backup_dir='' temporary_file=''
+      configuration_changed=false
+      log() { printf '%s [static-ip] %s\n' "$(date -u +%FT%TZ)" "$*"; }
+      fail() { log "ERROR $*"; return 1; }
+      is_ipv4() {
+        [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+        local part
+        local -a parts
+        IFS=. read -r -a parts <<< "$1"
+        for part in "${parts[@]}"; do (( 10#$part <= 255 )) || return 1; done
+      }
+      is_cidr() {
+        [[ "$1" == */* ]] || return 1
+        is_ipv4 "${1%/*}" || return 1
+        [[ "${1##*/}" =~ ^([0-9]|[12][0-9]|3[0-2])$ ]]
+      }
+      cidr_value() {
+        awk -v cidr="$1" -v address="${2:-}" '
+          function number(ip, octets) {split(ip,octets,"."); return ((octets[1]*256+octets[2])*256+octets[3])*256+octets[4]}
+          BEGIN {split(cidr,parts,"/"); size=2^(32-parts[2]); network=int(number(parts[1])/size)*size;
+            if(address!="") exit !(int(number(address)/size)*size==network);
+            printf "%d.%d.%d.%d/%s\n",int(network/16777216),int(network/65536)%256,int(network/256)%256,network%256,parts[2]}'
+      }
+      in_cidr() { is_ipv4 "$1" && is_cidr "$2" && cidr_value "$2" "$1"; }
+      default_iface() {
+        ip -4 route show default | awk '{for (i=1;i<NF;i++) if ($i=="dev") {print $(i+1); exit}}'
+      }
+      dhcp_gateway() {
+        ip -4 route show default dev "$1" | awk '
+          {gateway=""; rank=1; metric=0;
+           for(i=1;i<NF;i++) {if($i=="via") gateway=$(i+1); if($i=="metric") metric=$(i+1); if($i=="proto" && $(i+1)=="dhcp") rank=0}
+           if(gateway!="") print rank,metric,gateway}' | sort -k1,1n -k2,2n | awk '
+          NR==1 {rank=$1; metric=$2; gateway=$3}
+          $1==rank && $2==metric && $3!=gateway {ambiguous=1}
+          END {if(NR && !ambiguous) print gateway}'
+      }
+      select_nic() {
+        local mode="$1" target="$2" iface cidr
+        local -a matches=()
+        while read -r iface cidr; do
+          [ -n "$iface" ] && is_cidr "$cidr" || continue
+          if [ "$mode" != ip ] && { [ "$iface" = "$elastic_iface" ] || [ "$iface" = "$monitor_iface" ]; }; then continue; fi
+          case "$mode" in
+            ip) [ "${cidr%/*}" = "$target" ] ;;
+            subnet) in_cidr "$target" "$cidr" ;;
+            iface) [ "$iface" = "$target" ] ;;
+          esac && matches+=("$iface $cidr")
+        done <<< "$ip_rows"
+        [ "${#matches[@]}" -eq 1 ] && printf '%s\n' "${matches[0]}"
+      }
+      assign_nic() { read -r "${1}_iface" "${1}_address" < <(select_nic "$2" "$3"); }
+      detect_nics() {
+        local_iface=''; local_address=''; elastic_iface=''; elastic_address=''; monitor_iface=''; monitor_address=''
+        ip_rows=$(ip -o -4 addr show scope global | awk '{sub(/@.*/, "", $2); print $2, $4}')
+        if [ "$ELASTIC_ENABLED" = true ]; then
+          assign_nic elastic ip "$ELASTIC_IP" || return 1
+          elastic_gateway=$(dhcp_gateway "$elastic_iface")
+          is_ipv4 "$elastic_gateway" || return 1
+        fi
+        if [ -n "$MONITOR_IP" ]; then assign_nic monitor ip "$MONITOR_IP" || true; fi
+        if [ "$TELEPORT_ENABLED" = true ] && [ -z "$monitor_iface" ]; then return 1; fi
+        if [ -n "$LOCAL_IP" ]; then assign_nic local ip "$LOCAL_IP" || return 1;
+        elif is_ipv4 "$LOCAL_GATEWAY"; then assign_nic local subnet "$LOCAL_GATEWAY" || return 1;
+        else assign_nic local iface "$(default_iface)" || return 1; fi
+        [ "$local_iface" != "$elastic_iface" ] && [ "$local_iface" != "$monitor_iface" ] || return 1
+        [ -z "$elastic_iface" ] || [ "$elastic_iface" != "$monitor_iface" ] || return 1
+        local_gateway="$LOCAL_GATEWAY"
+        is_ipv4 "$local_gateway" || local_gateway=$(dhcp_gateway "$local_iface")
+        is_ipv4 "$local_gateway" || return 1
+        nics=("$local_iface" "$elastic_iface" "$monitor_iface")
+        addresses=("$local_address" "$elastic_address" "$monitor_address")
+        gateways=("$local_gateway" "${elastic_gateway:-}" '')
+        destinations=('0.0.0.0/0' '0.0.0.0/0' '')
+        [ "$ELASTIC_ENABLED" != true ] || destinations[0]="$VPC_CIDR"
+        for iface in "${nics[@]}"; do [ -z "$iface" ] || [[ "$iface" =~ ^[a-zA-Z0-9_.:-]+$ ]] || return 1; done
+      }
+      # Native Debian ifupdown stanzas. CIDR/prefix comes from the actual DHCP lease.
+      write_nic() {
+        local iface="$1" address="$2" destination="${3:-}" gateway="${4:-}"
+        printf '\nauto %s\niface %s inet static\n    address %s\n' "$iface" "$iface" "$address"
+        if [ -n "$destination" ]; then
+          printf '    post-up ip -4 route replace %s via %s dev %s onlink\n' "$destination" "$gateway" "$iface"
+          printf '    pre-down ip -4 route del %s via %s dev %s 2>/dev/null || true\n' "$destination" "$gateway" "$iface"
+          if [ "$destination" = '0.0.0.0/0' ]; then printf '    dns-nameservers 8.8.8.8 1.1.1.1\n'; fi
+        fi
+      }
+      render_interfaces() {
+        printf '# Managed by CloudTool; original network config is backed up.\nauto lo\niface lo inet loopback\n'
+        local i
+        for i in "${!nics[@]}"; do [ -z "${nics[$i]}" ] || write_nic "${nics[$i]}" "${addresses[$i]}" "${destinations[$i]}" "${gateways[$i]}"; done
+      }
+      route_matches() {
+        local destination="$1"
+        [ "$destination" != '0.0.0.0/0' ] || destination=default
+        ip -4 route show "$destination" | awk -v to="$destination" -v dev="$2" -v via="$3" '
+          {d=""; g=""; for(i=1;i<NF;i++) {if($i=="dev") d=$(i+1); if($i=="via") g=$(i+1)}
+           if($1==to && d==dev && g==via) found=1; else if(to=="default") bad=1}
+          END {exit (!found || bad)}'
+      }
+      verify_network() {
+        local i
+        for i in "${!nics[@]}"; do
+          [ -n "${nics[$i]}" ] || continue
+          if ! ip -o -4 addr show dev "${nics[$i]}" scope global | awk -v address="${addresses[$i]}" '$4==address {found=1} END {exit !found}'; then
+            log "VERIFY_MISSING_ADDRESS iface=${nics[$i]} expected=${addresses[$i]}"
+            return 1
+          fi
+          if [ -n "${destinations[$i]}" ] && ! route_matches "${destinations[$i]}" "${nics[$i]}" "${gateways[$i]}"; then
+            log "VERIFY_ROUTE_MISMATCH iface=${nics[$i]} to=${destinations[$i]} via=${gateways[$i]}"
+            return 1
+          fi
+        done
+      }
+      down_nics() {
+        local iface
+        for iface in "${nics[@]}"; do [ -z "$iface" ] || ifdown --force "$iface" || log "IFDOWN_WARNING iface=$iface"; done
+      }
+      network_state() {
+        log 'NETWORK_STATE addresses and routes'
+        ip -o -4 addr show scope global || true
+        ip -4 route show table main || true
+      }
+      reapply_nics() {
+        local iface
+        log 'REAPPLY explicitly configuring managed NICs with ifupdown'
+        for iface in "${nics[@]}"; do
+          [ -n "$iface" ] || continue
+          ifdown --force "$iface" || log "IFDOWN_WARNING iface=$iface"
+          ifup --force "$iface" || return 1
+        done
+      }
+      cleanup() { if [ -n "$temporary_file" ]; then rm -f -- "$temporary_file"; fi; }
+      on_error() {
+        local status="$1" line="$2" iface
+        trap - ERR
+        set +e
+        log "ERROR line=$line exit=$status"
+        if [ "$configuration_changed" = true ] && [ -f "$backup_dir/interfaces" ]; then
+          log "ROLLBACK restoring $backup_dir/interfaces"
+          down_nics
+          cp -a -- "$backup_dir/interfaces" "$INTERFACES_FILE"
+          if systemctl restart networking.service; then log 'ROLLBACK_SUCCESS'; else log 'ROLLBACK_FAILED'; fi
+        fi
+        exit "$status"
+      }
+      wait_for() {
+        local attempts="$1" check="$2" attempt
+        for ((attempt=1; attempt<=attempts; attempt++)); do
+          if "$check"; then return 0; fi
+          if ((attempt==1 || attempt%10==0)); then log "WAIT $check $attempt/$attempts"; fi
+          if ((attempt<attempts)); then sleep 2; fi
+        done
+        return 1
+      }
+      # Main: all network processing runs in this Bash script.
+      mkdir -p "$LOG_DIR" "$BACKUP_ROOT" "$NETWORK_DIR"
+      chmod 0750 "$LOG_DIR"; exec >> "$LOG_FILE" 2>&1
+      trap 'cleanup' EXIT
+      trap 'on_error "$?" "$LINENO"' ERR
+      exec 9> "$LOCK_FILE"
+      flock -x 9
+      case "$ELASTIC_ENABLED" in true|false) ;; *) fail 'elastic_ip_enabled must be true or false' ;; esac
+      [ -z "$LOCAL_IP" ] || is_ipv4 "$LOCAL_IP" || fail 'Invalid private_ip'
+      [ -z "$MONITOR_IP" ] || is_ipv4 "$MONITOR_IP" || fail 'Invalid TP_MONITOR_IP'
+      if [ "$TELEPORT_ENABLED" = true ]; then is_ipv4 "$MONITOR_IP" || fail 'Monitor IP is required'; fi
+      if [ "$ELASTIC_ENABLED" = true ]; then
+        is_ipv4 "$ELASTIC_IP" || fail 'A valid elastic_ip_address is required'
+        is_ipv4 "$LOCAL_GATEWAY" || fail 'A valid local_gateway is required with Elastic IP'
+        is_cidr "$VPC_CIDR" || fail 'A valid vpc_cidr is required with Elastic IP'
+        VPC_CIDR=$(cidr_value "$VPC_CIDR")
+        [ "$VPC_CIDR" != '0.0.0.0/0' ] || fail 'vpc_cidr must not be a default route'
+        [ "$ELASTIC_IP" != "$LOCAL_IP" ] && [ "$ELASTIC_IP" != "$MONITOR_IP" ] || fail 'NIC addresses must differ'
+      fi
+      wait_for 90 detect_nics || fail 'NIC addresses or DHCP gateway were not ready after 180 seconds'
+      log "NIC_READY local=$local_iface/$local_address elastic=${elastic_iface:-none}/${elastic_address:-none} monitor=${monitor_iface:-none}/${monitor_address:-none}"
+      [ -f "$INTERFACES_FILE" ] || fail 'The working ifupdown interfaces file is missing'
+      temporary_file=$(mktemp "$NETWORK_DIR/.cloudtool-static.XXXXXX")
+      render_interfaces > "$temporary_file"; chmod 600 "$temporary_file"
+      ifquery --interfaces="$temporary_file" --list >/dev/null
+      backup_dir=$(mktemp -d "$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
+      cp -a -- "$NETWORK_DIR/." "$backup_dir/"
+      log "NETWORK_BACKUP path=$backup_dir"
+      configuration_changed=true
+      down_nics
+      mv -f -- "$temporary_file" "$INTERFACES_FILE"
+      temporary_file=''
+      log "INTERFACES_RENDERED file=$INTERFACES_FILE"
+      sed 's/^/INTERFACES | /' "$INTERFACES_FILE"
+      systemctl restart networking.service
+      if ! verify_network; then
+        network_state
+        reapply_nics
+      fi
+      if ! wait_for 10 verify_network; then
+        network_state
+        fail 'Static addresses or default/VPC routes failed verification'
+      fi
+      configuration_changed=false
+      log "SUCCESS local=$local_iface/$local_address elastic=${elastic_iface:-none}/${elastic_address:-none} monitor=${monitor_iface:-none}/${monitor_address:-none}"
+  - path: /usr/local/sbin/cloudtool-teleport.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      [ '{{TELEPORT_ENABLE}}' = 'true' ] || { echo 'TELEPORT_SKIPPED'; exit 0; }
+      # Public/vpublic profiles match the Ubuntu template.
+      token='f7adb7ccdf04037bcd2b554hjn343lk52ec6010fd6f0caec94ba190b765'
+      region='{{TP_REGION}}'
+      case "$region" in
+        public) version='13.4.14'; host_ip='10.129.0.232' ;;
+        vpublic) version='16.4.11'; host_ip='10.129.24.54' ;;
+        *) echo "Unsupported TP_REGION: $region" >&2; exit 1 ;;
+      esac
+      host_name="$region.teleport.gpdn.net"; auth="$host_name:443"
+      [ -n "$token" ] || { echo 'Teleport join token is required' >&2; exit 1; }
+      arch=$(dpkg --print-architecture)
+      case "$arch" in amd64|arm64) ;; *) echo 'Unsupported Teleport architecture' >&2; exit 1 ;; esac
+      package=''
+      trap 'if [ -n "$package" ]; then rm -f -- "$package"; fi' EXIT
+      installed_version=$(dpkg-query -W -f='${Version}' teleport 2>/dev/null || true)
+      if [ "${installed_version%%-*}" != "$version" ]; then
+        package=$(mktemp /tmp/cloudtool-teleport.XXXXXX.deb)
+        curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 300 \
+          -o "$package" "https://cdn.teleport.dev/teleport_${version}_${arch}.deb"
+        dpkg -i "$package"
+      fi
+      binary=$(command -v teleport)
+      [ -x "$binary" ] || { echo 'Teleport binary was not installed' >&2; exit 1; }
+      sed -i -E '/(^|[[:space:]])(public|vpublic)\.teleport\.gpdn\.net([[:space:]]|$)/d; /^(10\.129\.0\.232|10\.129\.24\.54)[[:space:]]/d' /etc/hosts
+      printf '%s %s\n' "$host_ip" "$host_name" >> /etc/hosts
+      # Keep the join token in a root-only environment file rather than the unit.
+      install -d -m 0700 /etc/cloudtool
+      printf 'TELEPORT_JOIN_TOKEN=%s\n' "$token" > /etc/cloudtool/teleport.env
+      chmod 600 /etc/cloudtool/teleport.env
+      cat > /etc/systemd/system/teleport.service <<EOF
+      [Unit]
+      Description=CloudTool Teleport node
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      KillMode=process
+      EnvironmentFile=/etc/cloudtool/teleport.env
+      ExecStart=$binary start --pid-file=/run/teleport.pid --roles=node --token=\${TELEPORT_JOIN_TOKEN} --auth-server=$auth --nodename={{TP_SYSTEM}}_{{TP_HOSTNAME}}_{{TP_MONITOR_IP}} --labels=env=pro,system={{TP_SYSTEM}},type=server,ip_local={{private_ip}},ip={{TP_MONITOR_IP}}
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      systemctl daemon-reload
+      systemctl enable teleport; systemctl restart teleport
+      systemctl is-active --quiet teleport
+      echo "TELEPORT_SUCCESS region=$region version=$version"
+  - path: /usr/local/sbin/cloudtool-mount-volumes-ext4.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      # Data volumes: blank disk -> LVM -> ext4 -> UUID fstab -> mount.
+      set -Eeuo pipefail
+      export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+      shopt -s nullglob
+      ROWS='{{data_volumes_shell}}'
+      LOG_DIR=/var/log/cloudtool
+      FSTAB=/etc/fstab
+      BACKUP_ROOT=/var/backups/cloudtool/volumes
+      SYS_BLOCK=/sys/class/block
+      mkdir -p "$LOG_DIR" "$BACKUP_ROOT"
+      exec >> "$LOG_DIR/mount-volumes.log" 2>&1
+      log() { printf '%s [volumes] %s\n' "$(date -u +%FT%TZ)" "$*"; }
+      fail() { log "ERROR $*"; return 1; }
+      trap 'status=$?; log "ERROR line=$LINENO exit=$status"; exit "$status"' ERR
+      mapfile -t volumes < <(printf '%b\n' "$ROWS" | awk -F, '$1=="data" {print}')
+      [ "${#volumes[@]}" -gt 0 ] || { log 'SKIPPED no data volumes'; exit 0; }
+      required_tools=(pvcreate vgcreate lvcreate pvs vgs lvs mkfs.ext4 lsblk wipefs findmnt mountpoint blockdev blkid mount flock)
+      missing_tools() {
+        local tool
+        for tool in "${required_tools[@]}"; do command -v "$tool" >/dev/null 2>&1 || printf '%s ' "$tool"; done
+      }
+      ensure_tools() {
+        local missing
+        missing=$(missing_tools)
+        [ -n "$missing" ] || return 0
+        log "INSTALL missing tools: $missing"
+        command -v apt-get >/dev/null 2>&1 || fail 'apt-get is unavailable; cannot install volume tools'
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -y -o DPkg::Lock::Timeout=180 -o Acquire::Retries=3 install --no-install-recommends lvm2 e2fsprogs util-linux mount
+        hash -r
+        missing=$(missing_tools)
+        [ -z "$missing" ] || fail "Volume tools still missing after installation: $missing"
+      }
+      ensure_tools
+      exec 9>/run/cloudtool-mount-volumes.lock
+      flock -x 9
+      # Exclude every disk backing /, including LVM/encrypted root devices.
+      root_source=$(findmnt -n -o SOURCE /)
+      root_source=${root_source%%\[*}
+      mapfile -t root_disks < <(lsblk -srnpo NAME,TYPE "$root_source" | awk '$2=="disk" {print $1}' | sort -u)
+      [ "${#root_disks[@]}" -gt 0 ] || fail 'Cannot identify the root disks safely'
+      is_root() { local root; for root in "${root_disks[@]}"; do [ "$1" != "$root" ] || return 0; done; return 1; }
+      is_block() { [ -b "$1" ]; }
+      has_tag() { "$1" --noheadings -o "$2" "$3" | tr ', ' '\n' | grep -qx cloudtool; }
+      is_blank() {
+        local disk="$1" signatures
+        local -a children holders
+        is_block "$disk" && ! is_root "$disk" || return 1
+        [ "$(lsblk -dnro RO "$disk")" = 0 ] || return 1
+        mapfile -t children < <(lsblk -nrpo NAME "$disk")
+        [ "${#children[@]}" -eq 1 ] || return 1
+        holders=("$SYS_BLOCK/${disk##*/}/holders/"*)
+        [ "${#holders[@]}" -eq 0 ] || return 1
+        if lsblk -nrpo MOUNTPOINT "$disk" | grep -q '[^[:space:]]'; then return 1; fi
+        signatures=$(wipefs --no-act --noheadings --output TYPE "$disk") || return 1
+        [ -z "$signatures" ]
+      }
+      size_matches() {
+        local bytes="$1" size="$2" tolerance=8388608
+        (( (bytes >= size*1073741824-tolerance && bytes <= size*1073741824+tolerance) ||
+           (bytes >= size*1000000000-tolerance && bytes <= size*1000000000+tolerance) ))
+      }
+      select_disk() {
+        local disk bytes
+        while read -r disk; do
+          is_blank "$disk" || continue
+          bytes=$(blockdev --getsize64 "$disk")
+          size_matches "$bytes" "$1" || continue
+          printf '%s\n' "$disk"; return 0
+        done < <(lsblk -dnpo NAME,TYPE | awk '$2=="disk" {print $1}' | sort)
+        return 1
+      }
+      parse_row() {
+        IFS=, read -r mount_as disk_type size mount_path extra <<< "$1"
+        original_path="$mount_path"
+        mount_path=$(printf '%s' "$mount_path" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s#/[[:space:]]+#/#g; s#[[:space:]]+/#/#g')
+        [ "$mount_path" = "$original_path" ] || log "NORMALIZED mount_path='$original_path' -> '$mount_path'"
+        name=${mount_path#/}; name=${name//\//_}; name=${name//./_}; name=${name//-/_}
+      }
+      assert_nonroot() {
+        local disk
+        local -a backing
+        mapfile -t backing < <(lsblk -srnpo NAME,TYPE "$1" | awk '$2=="disk" {print $1}')
+        [ "${#backing[@]}" -gt 0 ] || fail "Cannot identify backing disks: $1"
+        for disk in "${backing[@]}"; do if is_root "$disk"; then fail "Refusing root-backed device $1"; fi; done
+      }
+      # Validate every row before any disk mutation; prevent path/VG collisions.
+      declare -A paths=() names=()
+      for row in "${volumes[@]}"; do
+        parse_row "$row"
+        [[ "$size" =~ ^[1-9][0-9]{0,5}$ ]] && [ -z "${extra:-}" ] || fail "Invalid data volume size/row: $row"
+        [[ "$mount_path" =~ ^/[A-Za-z0-9_./-]+$ ]] || fail "Invalid mount path: $mount_path"
+        [ "$mount_path" = "$(realpath -m -- "$mount_path")" ] || fail "Mount path must be canonical: $mount_path"
+        case "$mount_path" in /|/etc|/usr|/var|/boot|/dev|/proc|/sys|/run|/bin|/sbin|/lib|/lib64|/dev/*|/proc/*|/sys/*|/run/*) fail "Refusing system mount path $mount_path" ;; esac
+        [ "${#name}" -le 100 ] && [ -z "${paths[$mount_path]:-}${names[$name]:-}" ] || fail "Duplicate mount path/VG: $mount_path"
+        paths[$mount_path]=1; names[$name]=1
+        if ! mountpoint -q "$mount_path" && [ -d "$mount_path" ]; then [ -z "$(find "$mount_path" -mindepth 1 -maxdepth 1 -print -quit)" ] || fail "Mount directory is not empty: $mount_path"; fi
+      done
+      backup=$(mktemp "$BACKUP_ROOT/fstab.$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
+      cp -a -- "$FSTAB" "$backup"
+      log "FSTAB_BACKUP path=$backup"
+      for row in "${volumes[@]}"; do
+        parse_row "$row"
+        vg="$name"; lv="$name"; lv_path="/dev/$vg/$lv"
+        if vgs "$vg" >/dev/null 2>&1; then
+          has_tag vgs vg_tags "$vg" || fail "Refusing unrelated existing VG $vg"
+        else
+          disk=''
+          for ((attempt=1; attempt<=90; attempt++)); do
+            if disk=$(select_disk "$size"); then break; fi
+            if ((attempt==1 || attempt%10==0)); then log "WAIT blank disk size=${size}GB mount=$mount_path $attempt/90"; fi
+            if ((attempt<90)); then sleep 2; fi
+          done
+          [ -n "$disk" ] || fail "No blank non-root disk of size ${size}GB for $mount_path"
+          is_blank "$disk" || fail "Disk is no longer blank: $disk"
+          pvcreate "$disk"
+          vgcreate --addtag cloudtool "$vg" "$disk"
+        fi
+        mapfile -t pv_devices < <(pvs --noheadings -o pv_name --select "vg_name=$vg" | awk '{print $1}')
+        [ "${#pv_devices[@]}" -gt 0 ] || fail "Cannot identify PVs for $vg"
+        for pv in "${pv_devices[@]}"; do assert_nonroot "$pv"; done
+        if ! lvs "$lv_path" >/dev/null 2>&1; then lvcreate --addtag cloudtool -l 100%FREE -n "$lv" "$vg"; fi
+        is_block "$lv_path" && has_tag lvs lv_tags "$lv_path" || fail "Missing/unowned LV $lv_path"
+        filesystem=$(blkid -s TYPE -o value "$lv_path" || true)
+        case "$filesystem" in
+          ext4) ;; # Reruns preserve the existing filesystem and its contents.
+          '') mkfs.ext4 "$lv_path" ;;
+          *) fail "Refusing to reformat $lv_path ($filesystem)" ;;
+        esac
+        uuid=$(blkid -s UUID -o value "$lv_path")
+        [ -n "$uuid" ] || fail "No UUID for $lv_path"
+        if mountpoint -q "$mount_path"; then
+          [ "$(findmnt -n -o UUID --mountpoint "$mount_path")" = "$uuid" ] || fail "Another filesystem is mounted at $mount_path"
+        else
+          [ -z "$(findmnt -rn -S "UUID=$uuid" -o TARGET || true)" ] || fail "$lv_path is already mounted elsewhere"
+        fi
+        temporary=$(mktemp "${FSTAB}.cloudtool.XXXXXX")
+        awk -v target="$mount_path" 'NF<2 || $1~/^#/ || $2!=target {print}' "$FSTAB" > "$temporary"
+        printf 'UUID=%s %s ext4 defaults,nofail 0 2\n' "$uuid" "$mount_path" >> "$temporary"
+        chmod --reference="$FSTAB" "$temporary"
+        mv -f -- "$temporary" "$FSTAB"
+        mkdir -p "$mount_path"
+        if ! mountpoint -q "$mount_path"; then mount "$mount_path"; fi
+        [ "$(findmnt -n -o UUID --mountpoint "$mount_path")" = "$uuid" ] || fail "Mount verification failed for $mount_path"
+        log "SUCCESS lv=$lv_path mount=$mount_path uuid=$uuid"
+      done
+      systemctl daemon-reload
+runcmd:
+  # Run independently: a hostname failure cannot prevent static networking.
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if /usr/local/sbin/cloudtool-set-hostname.sh >> /var/log/cloudtool/hostname.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s hostname\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']
+  # Same post-boot sequence as the tested KHCN template.
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if sleep 30 && /usr/local/sbin/cloudtool-static-ip.sh; then state=SUCCESS; else state=FAILED; fi; printf "%s %s static-ip\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if /usr/local/sbin/cloudtool-teleport.sh >> /var/log/cloudtool/teleport.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s teleport\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if /usr/local/sbin/cloudtool-mount-volumes-ext4.sh >> /var/log/cloudtool/mount-volumes.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s mount-volumes\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']

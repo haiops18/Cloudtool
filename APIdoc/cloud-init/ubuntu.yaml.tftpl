@@ -1,0 +1,265 @@
+#cloud-config
+# =============================================================================
+# Cloud-init cho Ubuntu / Debian (Terraform template)
+# - Tự chạy `apt update && apt upgrade` lúc first boot
+# - Tự reboot nếu kernel/glibc upgrade yêu cầu
+# - Tạo user vt_admin + app (match template Viettel GUI)
+# - Freeze IP DHCP thành static netplan
+# - Mount N data disks theo volumes_csv (qua /etc/vts-extra-disks.conf)
+# - DNS: 8.8.8.8 / 8.8.4.4
+# =============================================================================
+
+users:
+  - default
+  - name: vt_admin
+    gecos: vt_admin
+    groups: sudo
+    shell: /bin/bash
+    lock_passwd: false
+
+  - name: app
+    gecos: app
+    shell: /bin/bash
+    lock_passwd: false
+
+chpasswd:
+  expire: false
+  users:
+    - name: root
+      password: Viettel@2026
+      type: text
+    - name: vt_admin
+      password: Viettel@2023
+      type: text
+    - name: app
+      password: Viettel@2023
+      type: text
+
+ssh_pwauth: true
+disable_root: false
+
+# Hold snap refresh — Viettel NAT thường không reach được api.snapcraft.io
+bootcmd:
+  - |
+    if command -v snap >/dev/null 2>&1; then
+      snap set system refresh.hold="$(date -d '+1 year' --iso-8601=seconds)" 2>/dev/null || true
+    fi
+
+# ---- Auto-update lúc first boot ----
+package_update: true
+package_upgrade: true
+package_reboot_if_required: true
+
+# ---- Ghi config file + scripts ----
+write_files:
+  # Danh sách data disks: mỗi dòng "size_gb mount_point filesystem"
+  - path: /etc/vts-extra-disks.conf
+    permissions: '0644'
+    content: |
+%{ for d in extra_disks ~}
+      ${d.size_gb} ${d.mount_point} ${d.filesystem}
+%{ endfor ~}
+
+  # Script freeze DHCP IP → static netplan
+  - path: /usr/local/sbin/vts-freeze-static-ip.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      IFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -1)
+      ADDR=$(ip -4 -o addr show "$IFACE" | awk '{print $4}' | head -1)
+      GW=$(ip -4 route show default | awk '/default/ {print $3}' | head -1)
+      if [ -z "$IFACE" ] || [ -z "$ADDR" ] || [ -z "$GW" ]; then
+        echo "[freeze-static-ip] cannot determine network (IFACE=$IFACE ADDR=$ADDR GW=$GW) — aborting" >&2
+        exit 0
+      fi
+      echo "[freeze-static-ip] $IFACE -> $ADDR via $GW"
+      cat > /etc/netplan/99-vts-static.yaml <<EOF
+      network:
+        version: 2
+        ethernets:
+          $IFACE:
+            dhcp4: false
+            addresses: [$ADDR]
+            routes:
+              - to: default
+                via: $GW
+            nameservers:
+              addresses: [8.8.8.8, 8.8.4.4]
+      EOF
+      chmod 600 /etc/netplan/99-vts-static.yaml
+      # Xóa hết các file netplan khác (50-cloud-init.yaml, 01-netconfig.yaml,
+      # 00-installer-config.yaml, ...) — chỉ giữ lại config static của mình.
+      # Netplan merge tất cả *.yaml trong /etc/netplan; nếu còn file DHCP cũ sẽ
+      # ghi đè / sinh thêm địa chỉ DHCP làm IP không "freeze" đúng.
+      shopt -s nullglob
+      for f in /etc/netplan/*.yaml /etc/netplan/*.yml; do
+        [ "$f" = "/etc/netplan/99-vts-static.yaml" ] && continue
+        [ "$f" = "/etc/netplan/90-vts-monitor.yaml" ] && continue  # giữ config NIC monitor
+        echo "[freeze-static-ip] removing $f"
+        rm -f "$f"
+      done
+      shopt -u nullglob
+      netplan apply
+
+  # Script mount extra data disks theo /etc/vts-extra-disks.conf
+  - path: /usr/local/sbin/vts-mount-extra-disks.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      CONF=/etc/vts-extra-disks.conf
+      if [ ! -s "$CONF" ]; then
+        echo "[mount-extra-disks] no extra disks configured"
+        exit 0
+      fi
+
+      # Tìm boot disk (chứa /)
+      ROOT_SRC=$(findmnt -no SOURCE /)
+      BOOT_DISK=$(lsblk -ndo PKNAME "$ROOT_SRC" 2>/dev/null || true)
+      [ -z "$BOOT_DISK" ] && BOOT_DISK=$(basename "$ROOT_SRC" | sed 's/[0-9]*$//')
+      echo "[mount-extra-disks] boot disk: $BOOT_DISK"
+
+      # Danh sách disk khả dụng (unmounted, không phải boot): "name size_gb"
+      declare -A AVAIL
+      while IFS= read -r line; do
+        name=$(echo "$line" | awk '{print $1}')
+        size_b=$(echo "$line" | awk '{print $2}')
+        [ "$name" = "$BOOT_DISK" ] && continue
+        if lsblk -n -o MOUNTPOINT "/dev/$name" 2>/dev/null | grep -q .; then
+          continue
+        fi
+        size_gb=$(( size_b / 1024 / 1024 / 1024 ))
+        AVAIL[$name]=$size_gb
+        echo "[mount-extra-disks] available: $name = $${size_gb}GB"
+      done < <(lsblk -dn -b -o NAME,SIZE)
+
+      # Match config → disk theo size; mkfs nếu chưa có FS; mount; append fstab
+      while read -r sz mnt fs; do
+        [ -z "$sz" ] && continue
+        target=""
+        for dev in "$${!AVAIL[@]}"; do
+          if [ "$${AVAIL[$dev]}" = "$sz" ]; then
+            target=$dev
+            break
+          fi
+        done
+        if [ -z "$target" ]; then
+          echo "[mount-extra-disks] no available disk matching $${sz}GB for $mnt" >&2
+          continue
+        fi
+        DEV=/dev/$target
+        echo "[mount-extra-disks] $DEV ($${sz}GB) -> $mnt ($fs)"
+
+        EXISTING_FS=$(blkid -s TYPE -o value "$DEV" 2>/dev/null || echo "")
+        if [ -z "$EXISTING_FS" ]; then
+          mkfs.$fs -F "$DEV"
+        elif [ "$EXISTING_FS" != "$fs" ]; then
+          echo "[mount-extra-disks] $DEV already has $EXISTING_FS (expected $fs) — skip mkfs" >&2
+        fi
+
+        mkdir -p "$mnt"
+        UUID=$(blkid -s UUID -o value "$DEV")
+        # Xóa entry cũ (idempotent) rồi append mới
+        sed -i "\|^UUID=$UUID|d" /etc/fstab
+        echo "UUID=$UUID $mnt $fs defaults,nofail 0 2" >> /etc/fstab
+        mount "$mnt" 2>/dev/null || true
+
+        unset AVAIL[$target]
+      done < "$CONF"
+
+%{ if monitor_ip != "" ~}
+  # Script gán static IP cho NIC monitor (NIC thứ 2, KHÔNG có default route).
+  # NIC này được hạ tầng hot-attach SAU khi VM boot → script poll chờ NIC xuất hiện.
+  - path: /usr/local/sbin/vts-monitor-nic.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      MONITOR_IP="${monitor_ip}"
+      MONITOR_PREFIX="${monitor_nic_prefix}"
+      NETPLAN_FILE=/etc/netplan/90-vts-monitor.yaml
+
+      # NIC monitor = interface ethernet KHÔNG phải NIC chính (không default route),
+      # không phải loopback/ảo. Chờ tối đa ~60s vì NIC attach sau khi boot.
+      MON_IFACE=""
+      for _try in $(seq 1 30); do
+        PRIMARY=$(ip -o -4 route show to default | awk '{print $5}' | head -1)
+        for cand in /sys/class/net/*; do
+          name=$(basename "$cand")
+          [ "$name" = "lo" ] && continue
+          [ "$name" = "$PRIMARY" ] && continue
+          [ -e "$cand/device" ] || continue
+          MON_IFACE="$name"
+          break
+        done
+        [ -n "$MON_IFACE" ] && break
+        sleep 2
+      done
+
+      if [ -z "$MON_IFACE" ]; then
+        echo "[monitor-nic] NIC monitor chua xuat hien sau khi cho — bo qua (se cau hinh o lan boot sau)" >&2
+        exit 0
+      fi
+
+      echo "[monitor-nic] $MON_IFACE -> $MONITOR_IP/$MONITOR_PREFIX (khong default route)"
+      cat > "$NETPLAN_FILE" <<EOF
+      network:
+        version: 2
+        ethernets:
+          $MON_IFACE:
+            dhcp4: false
+            addresses: [$MONITOR_IP/$MONITOR_PREFIX]
+      EOF
+      chmod 600 "$NETPLAN_FILE"
+      netplan apply
+
+  # Service gán static IP cho NIC monitor. Chạy lúc boot VÀ mỗi khi NIC net được
+  # hot-add (qua udev rule bên dưới) → NIC attach trễ sau boot vẫn tự cấu hình tĩnh.
+  # KHÔNG dùng RemainAfterExit: oneshot "active (exited)" sẽ khiến udev SYSTEMD_WANTS
+  # không kích lại được. Bỏ nó để mỗi lần NIC xuất hiện service chạy lại từ đầu.
+  - path: /etc/systemd/system/vts-monitor-nic.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=VTS configure monitor NIC static IP
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/vts-monitor-nic.sh
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # udev: hễ có NIC net được thêm (kể cả hot-attach sau boot) → kích service.
+  # Fire cả cho NIC chính lúc boot cũng không sao — script tự bỏ qua NIC có
+  # default route, chỉ cấu hình NIC monitor (idempotent).
+  - path: /etc/udev/rules.d/90-vts-monitor-nic.rules
+    permissions: '0644'
+    content: |
+      ACTION=="add", SUBSYSTEM=="net", KERNEL!="lo", TAG+="systemd", ENV{SYSTEMD_WANTS}+="vts-monitor-nic.service"
+%{ endif ~}
+
+%{ if teleport_enabled ~}
+  # Teleport agent setup script (rendered by Terraform, passed as variable)
+  - path: /usr/local/sbin/vts-teleport-setup.sh
+    permissions: '0755'
+    content: |
+      ${indent(6, teleport_script)}
+%{ endif ~}
+
+# ---- Run scripts theo thứ tự ----
+runcmd:
+  - /usr/local/sbin/vts-freeze-static-ip.sh
+  - /usr/local/sbin/vts-mount-extra-disks.sh
+%{ if monitor_ip != "" ~}
+  - systemctl enable vts-monitor-nic.service
+  # Nạp udev rule ngay để NIC monitor hot-attach SAU cloud-init vẫn tự kích service.
+  - udevadm control --reload-rules
+  - /usr/local/sbin/vts-monitor-nic.sh
+%{ endif ~}
+%{ if teleport_enabled ~}
+  - /usr/local/sbin/vts-teleport-setup.sh
+%{ endif ~}

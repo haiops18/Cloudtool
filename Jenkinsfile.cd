@@ -1,0 +1,14 @@
+// Legacy direct-kubectl CD entrypoint intentionally disabled.
+// Use Jenkinsfile.production-release instead. It validates an immutable GHCR tag,
+// waits for an explicit approval, and creates a reviewed GitOps PR. Argo CD then
+// performs a manual sync after the GitOps change is approved.
+pipeline {
+  agent none
+  stages {
+    stage('Use GitOps release pipeline') {
+      steps {
+        error('Direct Kubernetes deployment is disabled. Run Jenkinsfile.production-release for an approved GitOps release.')
+      }
+    }
+  }
+}

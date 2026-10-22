@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloudtool-prod
+  labels:
+    app.kubernetes.io/part-of: cloudtool
+    pod-security.kubernetes.io/enforce: baseline

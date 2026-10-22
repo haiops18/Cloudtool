@@ -1,0 +1,63 @@
+- Header for all API: 
+- Authorization: Token xxxxxxxxxxxx
+	(Với xxxxxxxxxxxx là chuỗi tocken mà người dùng có)
+- project-id: yyyyyyyyyyy
+	(Với yyyyyyyyyyy là project id mà người dùng đang chọn, và luôn truyền với mọi API)
+
+
+==== API update security group ====
+- server_id: 8b01a18d-0c71-481f-8124-70b33730fb16
+- method: POST
+- api_link: /infra/servers/8b01a18d-0c71-481f-8124-70b33730fb16/update-security-group/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{'security_groups': ['294951ab-fd6e-4d46-aec8-eecc26735664', '807b6628-b934-400b-86ef-a769f0f8e491']}
+- status code: 202
+
+
+==== API resize server vm ====
+- server_id: 8b01a18d-0c71-481f-8124-70b33730fb16
+- method: POST
+- api_link: /infra/servers/0b6d03b1-734e-40ea-ac59-c2c950a4f035/resize/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{'specs': {'server_type': 'basic', 'kind': 'custom', 'ram': 6, 'vcpus': 2}, 'live_resize': True}
+- status code: 202
+- Note: 
+	+ server_type: basic or gpu (server detail have information)
+	+ kind: custom for all
+	+ live_resize : True for vm is running, false for vm is shutdown
+
+==== API create Elastic IP ====
+- method: POST
+- api_link: infra/elastic-ips/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- request:
+{"region":"e787f5f1-045b-4b2b-97a8-805d374be494","enable_ipv6":false}
+- response:
+{
+    "id": "4a00d09c-9c40-4754-b730-53c909da8030",
+    "display_name": "171.254.94.38",
+    "status": "down",
+    "server": null,
+    "created_at": "2026-10-14T01:12:30.916468Z",
+    "updated_at": "2026-10-14T01:12:33.203830Z",
+    "ip_address": "171.254.94.38",
+    "ipv6_address": null,
+    "description": "",
+    "enable_ipv4": true,
+    "enable_ipv6": false,
+    "mac_address": "fa:16:3e:2e:19:fe",
+    "project": "285c9b2f-55c8-4a97-a7ca-a89277bd9261",
+    "owner": "1a1b3381-f410-4096-98b8-5902a4a02006",
+    "region": "e787f5f1-045b-4b2b-97a8-805d374be494"
+}
+- status code: 201
+
+==== API delete Elastic IP ====
+- method: DELETE
+- api_link: infra/elastic-ips/4a00d09c-9c40-4754-b730-53c909da8030/
+- header: project-id: fdad79fd-c4c7-413f-90a4-c057ab96e29f
+- status code: 204
+
+

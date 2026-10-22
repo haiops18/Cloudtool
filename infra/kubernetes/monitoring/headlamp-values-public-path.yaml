@@ -1,0 +1,24 @@
+# Values for the Headlamp Helm release.
+# Apply with: helm upgrade headlamp headlamp/headlamp -n headlamp
+# --reuse-values -f headlamp-values-public-path.yaml
+
+config:
+  baseURL: /headlamp
+  extraArgs:
+    # Authentication is performed by oauth2-proxy/Traefik. Headlamp must
+    # never be reachable directly from the public HAProxy frontend.
+    - -proxy-auth=true
+    - -proxy-auth-username-header=X-Forwarded-User
+    - -proxy-auth-group-header=X-Forwarded-Group
+    - -proxy-auth-email-header=X-Forwarded-Email
+    # Kubernetes API currently rejects the forwarded OIDC bearer token with
+    # "invalid bearer token". Keep SSO identity at the proxy layer while
+    # Headlamp uses its in-cluster ServiceAccount until issuer/audience is
+    # corrected and verified.
+
+service:
+  type: NodePort
+  nodePort: 30080
+
+hostAliases: []
+

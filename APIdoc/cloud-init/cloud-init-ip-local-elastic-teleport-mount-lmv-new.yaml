@@ -1,0 +1,296 @@
+#cloud-config
+# Bash-only networking: with Elastic IP disabled, local owns the default route/DNS.
+# With Elastic IP enabled, detect NICs by their assigned IPv4 addresses:
+# Elastic owns the default route/DNS; local routes to VPC; monitor has no gateway.
+# Variables: {{elastic_ip_enabled}}, {{elastic_ip_address}}, {{private_ip}},
+# {{TELEPORT_ENABLE}}, {{TP_MONITOR_IP}}, {{local_gateway}}, {{vpc_cidr}}
+
+
+write_files:
+  - path: /usr/local/sbin/cloudtool-set-hostname.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      server_name='{{server_name}}'
+      [ -n "$server_name" ] || { echo 'server_name is required' >&2; exit 1; }
+      hostnamectl set-hostname "$server_name"
+      printf '%s [hostname] SUCCESS hostname=%s\n' "$(date -u +%FT%TZ)" "$server_name"
+
+  - path: /usr/local/sbin/cloudtool-static-ip.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      
+      LOG_DIR=/var/log/cloudtool
+      LOG_FILE="$LOG_DIR/static-ip.log"
+      NETPLAN_DIR=/etc/netplan
+      NETPLAN_FILE="$NETPLAN_DIR/50-cloud-init.yaml"
+      BACKUP_ROOT=/var/backups/cloudtool/netplan
+      LOCK_FILE=/run/cloudtool-static-ip.lock
+      ELASTIC_ENABLED='{{elastic_ip_enabled}}'
+      ELASTIC_IP='{{elastic_ip_address}}'
+      LOCAL_IP='{{private_ip}}'
+      LOCAL_GATEWAY='{{local_gateway}}'
+      VPC_CIDR='{{vpc_cidr}}'
+      TELEPORT_ENABLED='{{TELEPORT_ENABLE}}'
+      MONITOR_IP='{{TP_MONITOR_IP}}'
+      stage_dir='' backup_dir='' temporary_file=''
+      configuration_changed=false
+      
+      log() { printf '%s [static-ip] %s\n' "$(date -u +%FT%TZ)" "$*"; }
+      fail() { log "ERROR $*"; return 1; }
+      is_ipv4() {
+        [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+        local part
+        local -a parts
+        IFS=. read -r -a parts <<< "$1"
+        for part in "${parts[@]}"; do
+          (( 10#$part <= 255 )) || return 1
+        done
+      }
+      is_cidr() {
+        [[ "$1" == */* ]] || return 1
+        is_ipv4 "${1%/*}" || return 1
+        [[ "${1##*/}" =~ ^([0-9]|[12][0-9]|3[0-2])$ ]]
+      }
+      # CIDR arithmetic uses awk division, avoiding Bash masks and bit shifts.
+      cidr_value() {
+        awk -v cidr="$1" -v address="${2:-}" '
+          function number(ip, octets) {split(ip,octets,"."); return ((octets[1]*256+octets[2])*256+octets[3])*256+octets[4]}
+          BEGIN {split(cidr,parts,"/"); size=2^(32-parts[2]); network=int(number(parts[1])/size)*size;
+            if(address!="") exit !(int(number(address)/size)*size==network);
+            printf "%d.%d.%d.%d/%s\n",int(network/16777216),int(network/65536)%256,int(network/256)%256,network%256,parts[2]}'
+      }
+      in_cidr() { is_ipv4 "$1" && is_cidr "$2" && cidr_value "$2" "$1"; }
+      normalize_cidr() { cidr_value "$1"; }
+      default_iface() {
+        ip -4 route show default | awk '{for (i=1;i<NF;i++) if ($i=="dev") {print $(i+1); exit}}'
+      }
+      dhcp_gateway() {
+        # Read only this NIC's routes: prefer DHCP, then the lowest metric.
+        # If DHCP has not installed a route yet, the readiness loop will wait.
+        ip -4 route show default dev "$1" | awk '
+          {gateway=""; rank=1; metric=0;
+           for(i=1;i<NF;i++) {if($i=="via") gateway=$(i+1); if($i=="metric") metric=$(i+1); if($i=="proto" && $(i+1)=="dhcp") rank=0}
+           if(gateway!="") print rank,metric,gateway}' | sort -k1,1n -k2,2n | awk '
+          NR==1 {rank=$1; metric=$2; gateway=$3}
+          $1==rank && $2==metric && $3!=gateway {ambiguous=1}
+          END {if(NR && !ambiguous) print gateway}'
+      }
+      select_nic() {
+        local mode="$1" target="$2" iface cidr
+        local -a matches=()
+        while read -r iface cidr; do
+          [ -n "$iface" ] && is_cidr "$cidr" || continue
+          if [ "$mode" != ip ]; then
+            [ "$iface" != "$elastic_iface" ] && [ "$iface" != "$monitor_iface" ] || continue
+          fi
+          case "$mode" in
+            ip) [ "${cidr%/*}" = "$target" ] || continue ;;
+            subnet) in_cidr "$target" "$cidr" || continue ;;
+            iface) [ "$iface" = "$target" ] || continue ;;
+          esac
+          matches+=("$iface $cidr")
+        done <<< "$ip_rows"
+        [ "${#matches[@]}" -eq 1 ] || return 1
+        printf '%s\n' "${matches[0]}"
+      }
+      detect_nics() {
+        local_iface=''; local_address=''; elastic_iface=''; elastic_address=''; monitor_iface=''; monitor_address=''
+        ip_rows=$(ip -o -4 addr show scope global | awk '{sub(/@.*/, "", $2); print $2, $4}')
+        if [ "$ELASTIC_ENABLED" = true ]; then
+          read -r elastic_iface elastic_address < <(select_nic ip "$ELASTIC_IP") || return 1
+          elastic_gateway=$(dhcp_gateway "$elastic_iface")
+          is_ipv4 "$elastic_gateway" || return 1
+        fi
+        if [ -n "$MONITOR_IP" ]; then read -r monitor_iface monitor_address < <(select_nic ip "$MONITOR_IP") || true; fi
+        if [ "$TELEPORT_ENABLED" = true ] && [ -z "$monitor_iface" ]; then return 1; fi
+        if [ -n "$LOCAL_IP" ]; then read -r local_iface local_address < <(select_nic ip "$LOCAL_IP") || return 1;
+        elif is_ipv4 "$LOCAL_GATEWAY"; then read -r local_iface local_address < <(select_nic subnet "$LOCAL_GATEWAY") || return 1;
+        else read -r local_iface local_address < <(select_nic iface "$(default_iface)") || return 1; fi
+        [ "$local_iface" != "$elastic_iface" ] && [ "$local_iface" != "$monitor_iface" ] || return 1
+        [ -z "$elastic_iface" ] || [ "$elastic_iface" != "$monitor_iface" ] || return 1
+        if is_ipv4 "$LOCAL_GATEWAY"; then local_gateway="$LOCAL_GATEWAY";
+        else local_gateway=$(dhcp_gateway "$local_iface"); fi
+        is_ipv4 "$local_gateway" || return 1
+        for iface in "$local_iface" "$elastic_iface" "$monitor_iface"; do
+          [ -z "$iface" ] || [[ "$iface" =~ ^[a-zA-Z0-9_.:-]+$ ]] || return 1
+        done
+      }
+      # One writer for all NICs: monitor has no route/DNS; only the default NIC gets DNS.
+      write_nic() {
+        local iface="$1" address="$2" destination="${3:-}" gateway="${4:-}"
+        printf '    "%s":\n      addresses:\n        - "%s"\n      dhcp4: false\n' "$iface" "$address"
+        if [ -n "$destination" ]; then
+          printf '      routes:\n        - to: "%s"\n          via: "%s"\n' "$destination" "$gateway"
+          if ! in_cidr "$gateway" "$address"; then printf '          on-link: true\n'; fi
+          if [ "$destination" = '0.0.0.0/0' ]; then
+            printf '      nameservers:\n        addresses: [8.8.8.8, 1.1.1.1]\n'
+          fi
+        fi
+      }
+      render_netplan() {
+        printf 'network:\n  version: 2\n  ethernets:\n'
+        if [ "$ELASTIC_ENABLED" = true ]; then
+          write_nic "$local_iface" "$local_address" "$VPC_CIDR" "$local_gateway"
+          write_nic "$elastic_iface" "$elastic_address" '0.0.0.0/0' "$elastic_gateway"
+        else
+          write_nic "$local_iface" "$local_address" '0.0.0.0/0' "$local_gateway"
+        fi
+        if [ -n "$monitor_iface" ]; then write_nic "$monitor_iface" "$monitor_address"; fi
+      }
+      has_address() {
+        ip -o -4 addr show dev "$1" scope global | awk -v address="$2" '$4==address {found=1} END {exit !found}'
+      }
+      verify_network() {
+        local default_nic="$local_iface" default_gateway="$local_gateway"
+        has_address "$local_iface" "$local_address" || return 1
+        if [ -n "$monitor_iface" ]; then has_address "$monitor_iface" "$monitor_address" || return 1; fi
+        if [ "$ELASTIC_ENABLED" = true ]; then
+          has_address "$elastic_iface" "$elastic_address" || return 1
+          default_nic="$elastic_iface"; default_gateway="$elastic_gateway"
+          ip -4 route show "$VPC_CIDR" | awk -v to="$VPC_CIDR" -v dev="$local_iface" -v via="$local_gateway" '
+            {d=""; g=""; for(i=1;i<NF;i++) {if($i=="dev") d=$(i+1); if($i=="via") g=$(i+1)}
+             if($1==to && d==dev && g==via) found=1} END {exit !found}' || return 1
+        fi
+        ip -4 route show default | awk -v dev="$default_nic" -v via="$default_gateway" '
+          {d=""; g=""; for(i=1;i<NF;i++) {if($i=="dev") d=$(i+1); if($i=="via") g=$(i+1)}
+           count++; if(d!=dev || g!=via) bad=1} END {exit (count==0 || bad)}'
+      }
+      remove_yaml() {
+        local file
+        for file in "$NETPLAN_DIR"/*.yaml "$NETPLAN_DIR"/*.yml; do
+          if [ -f "$file" ] || [ -L "$file" ]; then rm -f -- "$file"; fi
+        done
+      }
+      cleanup() {
+        if [ -n "$temporary_file" ]; then rm -f -- "$temporary_file"; fi
+        if [[ "$stage_dir" == /tmp/cloudtool-netplan.* ]]; then rm -rf -- "$stage_dir"; fi
+      }
+      on_error() {
+        local status="$1" line="$2" file
+        trap - ERR
+        set +e
+        log "ERROR line=$line exit=$status"
+        if [ "$configuration_changed" = true ] && [ -d "$backup_dir" ]; then
+          log "ROLLBACK restoring $backup_dir"
+          remove_yaml
+          for file in "$backup_dir"/*.yaml "$backup_dir"/*.yml; do
+            if [ -f "$file" ] || [ -L "$file" ]; then cp -a -- "$file" "$NETPLAN_DIR/"; fi
+          done
+          if netplan generate && netplan apply; then log 'ROLLBACK_SUCCESS'; else log 'ROLLBACK_FAILED'; fi
+        fi
+        exit "$status"
+      }
+      
+      wait_for() {
+        local attempts="$1" check="$2" attempt
+        for ((attempt=1; attempt<=attempts; attempt++)); do
+          if "$check"; then return 0; fi
+          if ((attempt==1 || attempt%10==0)); then log "WAIT $check $attempt/$attempts"; fi
+          if ((attempt<attempts)); then sleep 2; fi
+        done
+        return 1
+      }
+      
+      # Main: all network processing runs in this Bash script.
+      mkdir -p "$LOG_DIR" "$BACKUP_ROOT"
+      chmod 0750 "$LOG_DIR"
+      exec >> "$LOG_FILE" 2>&1
+      trap 'cleanup' EXIT
+      trap 'on_error "$?" "$LINENO"' ERR
+      exec 9> "$LOCK_FILE"
+      flock -x 9
+      case "$ELASTIC_ENABLED" in true|false) ;; *) fail 'elastic_ip_enabled must be true or false' ;; esac
+      [ -z "$LOCAL_IP" ] || is_ipv4 "$LOCAL_IP" || fail 'Invalid private_ip'
+      [ -z "$MONITOR_IP" ] || is_ipv4 "$MONITOR_IP" || fail 'Invalid TP_MONITOR_IP'
+      if [ "$TELEPORT_ENABLED" = true ]; then is_ipv4 "$MONITOR_IP" || fail 'Monitor IP is required'; fi
+      if [ "$ELASTIC_ENABLED" = true ]; then
+        is_ipv4 "$ELASTIC_IP" || fail 'A valid elastic_ip_address is required'
+        is_ipv4 "$LOCAL_GATEWAY" || fail 'A valid local_gateway is required with Elastic IP'
+        is_cidr "$VPC_CIDR" || fail 'A valid vpc_cidr is required with Elastic IP'
+        VPC_CIDR=$(normalize_cidr "$VPC_CIDR")
+        [ "$VPC_CIDR" != '0.0.0.0/0' ] || fail 'vpc_cidr must not be a default route'
+        [ "$ELASTIC_IP" != "$LOCAL_IP" ] && [ "$ELASTIC_IP" != "$MONITOR_IP" ] || fail 'NIC addresses must differ'
+      fi
+      wait_for 90 detect_nics || fail 'NIC addresses or DHCP gateway were not ready after 180 seconds'
+      log "NIC_READY local=$local_iface/$local_address elastic=${elastic_iface:-none}/${elastic_address:-none} monitor=${monitor_iface:-none}/${monitor_address:-none}"
+      stage_dir=$(mktemp -d /tmp/cloudtool-netplan.XXXXXX)
+      mkdir -p "$stage_dir/etc/netplan"
+      render_netplan > "$stage_dir/etc/netplan/50-cloud-init.yaml"
+      chmod 600 "$stage_dir/etc/netplan/50-cloud-init.yaml"
+      # Validate without changing any active network configuration.
+      netplan generate --root-dir "$stage_dir"
+      backup_dir=$(mktemp -d "$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
+      cp -a -- "$NETPLAN_DIR/." "$backup_dir/"
+      log "NETPLAN_BACKUP path=$backup_dir"
+      temporary_file=$(mktemp "$NETPLAN_DIR/.cloudtool-static.XXXXXX")
+      cp -- "$stage_dir/etc/netplan/50-cloud-init.yaml" "$temporary_file"
+      chmod 600 "$temporary_file"
+      configuration_changed=true
+      remove_yaml
+      mv -f -- "$temporary_file" "$NETPLAN_FILE"
+      temporary_file=''
+      log "NETPLAN_RENDERED file=$NETPLAN_FILE"
+      sed 's/^/NETPLAN | /' "$NETPLAN_FILE"
+      netplan generate
+      netplan apply
+      wait_for 10 verify_network || fail 'Static addresses or default/VPC routes failed verification'
+      configuration_changed=false
+      log "SUCCESS local=$local_iface/$local_address elastic=${elastic_iface:-none}/${elastic_address:-none}"
+
+  - path: /usr/local/sbin/cloudtool-teleport.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      [ '{{TELEPORT_ENABLE}}' = 'true' ] || exit 0
+      # Fill this value manually before deploying. It is deliberately not
+      # read from a CloudTool/project variable.
+      token='f7adb7ccdf04037bcd2b554hjn343lk52ec6010fd6f0caec94ba190b765'
+      [ -n "$token" ] || { echo 'TP_JOIN_TOKEN is required when Teleport is enabled' >&2; exit 1; }
+      region='{{TP_REGION}}'
+      case "$region" in
+        public) version='13.4.14'; auth='public.teleport.gpdn.net:443'; host_ip='10.129.0.232'; host_name='public.teleport.gpdn.net' ;;
+        vpublic) version='16.4.11'; auth='vpublic.teleport.gpdn.net:443'; host_ip='10.129.24.54'; host_name='vpublic.teleport.gpdn.net' ;;
+        *) echo "Unsupported TP_REGION: $region" >&2; exit 1 ;;
+      esac
+      installed_version=$(dpkg-query -W -f='${Version}' teleport 2>/dev/null || true)
+      installed_version=${installed_version%%-*}
+      if [ "$installed_version" != "$version" ]; then
+        curl -fsSL -o /tmp/teleport.deb "https://cdn.teleport.dev/teleport_${version}_amd64.deb"
+        dpkg -i /tmp/teleport.deb
+        rm -f /tmp/teleport.deb
+      fi
+      # Remove both region aliases and their fixed addresses before adding the
+      # selected one. This prevents stale public/vpublic mappings from
+      # shadowing the region currently being configured.
+      sed -i -E '/(^|[[:space:]])(public|vpublic)\.teleport\.gpdn\.net([[:space:]]|$)/d; /^(10\.129\.0\.232|10\.129\.24\.54)[[:space:]]/d' /etc/hosts
+      printf '%s %s\n' "$host_ip" "$host_name" >> /etc/hosts
+      systemctl stop teleport 2>/dev/null || true
+      rm -rf /var/lib/teleport
+      cat > /etc/systemd/system/teleport.service <<EOF
+      [Unit]
+      Description=CloudTool Teleport node
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      KillMode=process
+      ExecStart=/usr/local/bin/teleport start --pid-file=/run/teleport.pid --roles=node --token=$token --auth-server=$auth --nodename={{TP_SYSTEM}}_{{TP_HOSTNAME}}_{{TP_MONITOR_IP}} --labels=env=pro,system={{TP_SYSTEM}},type=server,ip_local={{private_ip}},ip={{TP_MONITOR_IP}}
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      systemctl daemon-reload
+      systemctl enable --now teleport
+
+runcmd:
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if /usr/local/sbin/cloudtool-set-hostname.sh >> /var/log/cloudtool/hostname.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s hostname\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']
+  # Keep the post-boot delay: the local Cloud NIC may not be ready when
+  # cloud-init starts. The script itself waits for up to 180 seconds as well.
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if sleep 30 && /usr/local/sbin/cloudtool-static-ip.sh; then state=SUCCESS; else state=FAILED; fi; printf "%s %s static-ip\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']

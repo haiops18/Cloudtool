@@ -1,0 +1,176 @@
+#cloud-config
+# CloudTool Ubuntu: Local + Monitor static networking and Teleport.
+# Variables: {{server_name}}, {{TELEPORT_ENABLE}}, {{TP_MONITOR_IP}}, {{local_gateway}}
+
+package_update: false
+
+write_files:
+  - path: /usr/local/sbin/cloudtool-set-hostname.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      server_name='{{server_name}}'
+      [ -n "$server_name" ] || {
+        echo 'server_name is required.' >&2
+        exit 1
+      }
+      hostnamectl set-hostname "$server_name"
+      printf '%s [hostname] SUCCESS hostname=%s\n' "$(date -u +%FT%TZ)" "$server_name"
+
+  - path: /usr/local/sbin/cloudtool-static-ip.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      LOG_DIR=/var/log/cloudtool
+      LOG_FILE="$LOG_DIR/static-ip.log"
+      TELEPORT_ENABLED='{{TELEPORT_ENABLE}}'
+      MONITOR_IP='{{TP_MONITOR_IP}}'
+      LOCAL_GATEWAY='{{local_gateway}}'
+      NETPLAN_DIR=/etc/netplan
+      NETPLAN_FILE="$NETPLAN_DIR/50-cloud-init.yaml"
+      BACKUP_ROOT=/var/backups/cloudtool/netplan
+
+      mkdir -p "$LOG_DIR" "$BACKUP_ROOT"
+      exec >> "$LOG_FILE" 2>&1
+      timestamp() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+      log() { printf '%s [static-ip] %s\n' "$(timestamp)" "$*"; }
+      trap 'status=$?; log "ERROR line=${LINENO} exit=${status}"; exit "$status"' ERR
+
+      monitor_required=false
+      [ "$TELEPORT_ENABLED" = true ] && [[ "$MONITOR_IP" == 10.129.* ]] && monitor_required=true
+      log "START monitor=${MONITOR_IP:-none} gateway=${LOCAL_GATEWAY:-auto}"
+      for attempt in $(seq 1 90); do
+        local_iface=''
+        local_address=''
+        monitor_iface=''
+        monitor_address=''
+
+        for path in /sys/class/net/eth* /sys/class/net/ens*; do
+          [ -e "$path" ] || continue
+          iface=$(basename "$path")
+          while IFS= read -r address; do
+            ipaddr=${address%%/*}
+            if [ "$ipaddr" = "$MONITOR_IP" ]; then
+              monitor_iface="$iface"; monitor_address="$address"
+            elif [[ "$ipaddr" != 10.129.* ]] && [ -z "$local_iface" ]; then
+              local_iface="$iface"; local_address="$address"
+            fi
+          done < <(ip -o -4 addr show dev "$iface" scope global 2>/dev/null | awk '{print $4}')
+        done
+        if [ -n "$local_iface" ] && { [ "$monitor_required" = false ] || [ -n "$monitor_iface" ]; }; then
+          break
+        fi
+        if [ "$attempt" -eq 1 ] || [ $((attempt % 10)) -eq 0 ]; then
+          log "WAIT ${attempt}/90 local=${local_address:-none} monitor=${monitor_address:-none}"
+        fi
+        sleep 2
+      done
+      [ -n "$local_iface" ] || {
+        log 'Local NIC/address was not detected.'
+        exit 1
+      }
+      [ "$monitor_required" = false ] || [ -n "$monitor_iface" ] || {
+        log "Monitor IP $MONITOR_IP was not detected."
+        exit 1
+      }
+      log "NIC_READY local=$local_iface/$local_address monitor=${monitor_iface:-none}/${monitor_address:-none}"
+      if [ -z "$LOCAL_GATEWAY" ]; then
+        LOCAL_GATEWAY=$(ip -4 route show default dev "$local_iface" | awk '/default/ {print $3; exit}')
+      fi
+      if [ -z "$LOCAL_GATEWAY" ]; then
+        LOCAL_GATEWAY=$(ip -4 route show default | awk '/default/ {print $3; exit}')
+      fi
+      [ -n "$LOCAL_GATEWAY" ] || {
+        log 'Local gateway was not provided and could not be discovered.'
+        exit 1
+      }
+      backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+      cp -a "$NETPLAN_DIR" "$backup_dir"
+      find "$NETPLAN_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) -delete
+
+      cat > "$NETPLAN_FILE" <<EOF
+      network:
+        version: 2
+        ethernets:
+          $local_iface:
+            dhcp4: false
+            addresses:
+              - $local_address
+            routes:
+              - to: 0.0.0.0/0
+                via: $LOCAL_GATEWAY
+            nameservers:
+              addresses: [8.8.8.8, 1.1.1.1]
+      EOF
+      if [ "$monitor_required" = true ] && [ "$monitor_iface" != "$local_iface" ]; then
+        cat >> "$NETPLAN_FILE" <<EOF
+          $monitor_iface:
+            dhcp4: false
+            addresses:
+              - ${monitor_address:-$MONITOR_IP/$MONITOR_PREFIX}
+      EOF
+      fi
+      chmod 600 "$NETPLAN_FILE"
+      log "NETPLAN file=$NETPLAN_FILE gateway=$LOCAL_GATEWAY"
+      netplan generate
+      netplan apply
+      sleep 2
+      ip -4 route show default | grep -Fq "via $LOCAL_GATEWAY dev $local_iface"
+      log 'SUCCESS'
+      
+  - path: /usr/local/sbin/cloudtool-teleport.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      [ '{{TELEPORT_ENABLE}}' = 'true' ] || exit 0
+      # Fill this value manually before deploying. It is deliberately not
+      # read from a CloudTool/project variable.
+      token='f7adb7ccdf04037bcd2b554hjn343lk52ec6010fd6f0caec94ba190b765'
+      [ -n "$token" ] || { echo 'TP_JOIN_TOKEN is required when Teleport is enabled' >&2; exit 1; }
+      region='{{TP_REGION}}'
+      case "$region" in
+        public) version='13.4.14'; auth='public.teleport.gpdn.net:443'; host_ip='10.129.0.232'; host_name='public.teleport.gpdn.net' ;;
+        vpublic) version='16.4.11'; auth='vpublic.teleport.gpdn.net:443'; host_ip='10.129.24.54'; host_name='vpublic.teleport.gpdn.net' ;;
+        *) echo "Unsupported TP_REGION: $region" >&2; exit 1 ;;
+      esac
+      installed_version=$(dpkg-query -W -f='${Version}' teleport 2>/dev/null || true)
+      installed_version=${installed_version%%-*}
+      if [ "$installed_version" != "$version" ]; then
+        curl -fsSL -o /tmp/teleport.deb "https://cdn.teleport.dev/teleport_${version}_amd64.deb"
+        dpkg -i /tmp/teleport.deb
+        rm -f /tmp/teleport.deb
+      fi
+      # Remove both region aliases and their fixed addresses before adding the
+      # selected one. This prevents stale public/vpublic mappings from
+      # shadowing the region currently being configured.
+      sed -i -E '/(^|[[:space:]])(public|vpublic)\.teleport\.gpdn\.net([[:space:]]|$)/d; /^(10\.129\.0\.232|10\.129\.24\.54)[[:space:]]/d' /etc/hosts
+      printf '%s %s\n' "$host_ip" "$host_name" >> /etc/hosts
+      systemctl stop teleport 2>/dev/null || true
+      rm -rf /var/lib/teleport
+      cat > /etc/systemd/system/teleport.service <<EOF
+      [Unit]
+      Description=CloudTool Teleport node
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      ExecStart=/usr/local/bin/teleport start --pid-file=/run/teleport.pid --roles=node --token=$token --auth-server=$auth --nodename={{TP_SYSTEM}}_{{TP_HOSTNAME}}_{{TP_MONITOR_IP}} --labels=env=pro,system={{TP_SYSTEM}},type=server,ip={{TP_MONITOR_IP}}
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      systemctl daemon-reload
+      systemctl enable --now teleport
+
+runcmd:
+  # Run independently: a hostname failure cannot prevent static networking.
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if /usr/local/sbin/cloudtool-set-hostname.sh >> /var/log/cloudtool/hostname.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s hostname\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']
+  # Same post-boot sequence as the tested KHCN template.
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if sleep 30 && /usr/local/sbin/cloudtool-static-ip.sh; then state=SUCCESS; else state=FAILED; fi; printf "%s %s static-ip\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if /usr/local/sbin/cloudtool-teleport.sh >> /var/log/cloudtool/teleport.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s teleport\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']

@@ -1,0 +1,133 @@
+cat > /root/mount_disks.sh <<'EOF'
+#!/bin/bash
+set -Eeuo pipefail
+
+ROWS='
+vdb,/u01
+vdc,/logs
+'
+
+FORCE=false
+
+case "${1:-}" in
+    --force)
+        FORCE=true
+        ;;
+    "")
+        ;;
+    *)
+        echo "Usage: $0 [--force]"
+        exit 1
+        ;;
+esac
+
+for row in $ROWS; do
+    IFS=, read -r disk mp <<< "$row"
+
+    dev="/dev/$disk"
+    part="${dev}1"
+    vg="${mp#/}"
+    lv="$vg"
+    lvm="/dev/$vg/$lv"
+
+    echo
+    echo "=== $dev -> $mp ==="
+
+    [ -b "$dev" ] || {
+        echo "ERROR: $dev not found"
+        exit 1
+    }
+
+    # Disk đã có partition
+    if lsblk -nr "$dev" | awk 'NR>1 {found=1} END {exit !found}'; then
+        if [ "$FORCE" != true ]; then
+            echo "ERROR: $dev already has partition(s)."
+            echo "Use --force if you allow this disk to be formatted."
+            exit 1
+        fi
+
+        echo "WARNING: $dev will be completely reformatted."
+        read -r -p "Type '$disk' to confirm: " confirm
+
+        [ "$confirm" = "$disk" ] || {
+            echo "ERROR: confirmation failed."
+            exit 1
+        }
+
+        # Nếu đang mount thì dừng, không tự unmount
+        if lsblk -nrpo MOUNTPOINT "$dev" | grep -q '^/'; then
+            echo "ERROR: $dev is currently mounted."
+            echo "Run unmount_disk.sh first."
+            exit 1
+        fi
+
+        # Xóa filesystem/partition cũ
+        wipefs -af "$dev"
+
+        parted -s "$dev" mklabel gpt
+    else
+        parted -s "$dev" mklabel gpt
+    fi
+
+    # Kiểm tra VG đã tồn tại
+    if vgs "$vg" &>/dev/null; then
+        echo "ERROR: VG $vg already exists."
+        exit 1
+    fi
+
+    # Tạo partition LVM
+    parted -s "$dev" mkpart primary 0% 100%
+    parted -s "$dev" set 1 lvm on
+    partprobe "$dev"
+    udevadm settle
+
+    [ -b "$part" ] || {
+        echo "ERROR: $part was not created."
+        exit 1
+    }
+
+    # LVM
+    pvcreate "$part"
+    vgcreate "$vg" "$part"
+    lvcreate -l 100%FREE -n "$lv" "$vg"
+
+    # EXT4
+    mkfs.ext4 -F "$lvm"
+
+    # Mount point
+    mkdir -p "$mp"
+
+    # Không tạo duplicate fstab
+    sed -i "\|[[:space:]]$mp[[:space:]]|d" /etc/fstab
+    echo "$lvm $mp ext4 defaults,nofail 0 2" >> /etc/fstab
+
+    mount "$mp"
+
+    mountpoint -q "$mp" || {
+        echo "ERROR: failed to mount $mp"
+        exit 1
+    }
+
+    echo "OK: $lvm -> $mp"
+done
+
+systemctl daemon-reload
+
+echo
+echo "=== VERIFY ==="
+lsblk
+echo
+pvs
+echo
+vgs
+echo
+lvs
+echo
+df -hT
+EOF
+
+chmod 750 /root/mount_disks.sh
+
+./mount_disks.sh --force
+
+cat /etc/fstab

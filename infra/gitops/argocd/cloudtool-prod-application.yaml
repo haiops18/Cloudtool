@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cloudtool-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ducanhslvp/CloudTool.git
+    targetRevision: gitops-prod
+    path: infra/gitops/cloudtool-prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cloudtool-prod
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

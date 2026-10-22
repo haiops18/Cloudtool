@@ -1,0 +1,199 @@
+#!/bin/bash
+# =============================================================================
+# Teleport Agent Setup Script
+# Được render bởi Terraform templatefile() và chạy qua cloud-init runcmd.
+#
+# Template variables (truyền từ Terraform):
+#   teleport_version : ví dụ "16.4.11"
+#   teleport_token   : join token
+#   teleport_region  : "vn-central-1" hoặc "vn-north-1"
+#   teleport_system  : tên hệ thống, ví dụ "Cholimex_TESSEL"
+#   teleport_hostname: tên node, ví dụ "App-2"
+#   teleport_ip      : IP monitor (dùng cho label ip= và node name)
+#
+# IP_LOCAL (IP NIC chính) KHÔNG truyền từ Terraform — script tự detect lúc chạy,
+# vì IP này chỉ có sau khi VM được tạo (DHCP/subnet-key gán).
+# =============================================================================
+
+set -euo pipefail
+
+TELEPORT_VERSION="${teleport_version}"
+TELEPORT_TOKEN="${teleport_token}"
+TELEPORT_REGION="${teleport_region}"
+SYSTEM="${teleport_system}"
+HOSTNAME_NODE="${teleport_hostname}"
+IP="${teleport_ip}"
+
+# IP_LOCAL = IP PRIVATE (RFC1918) của NIC chính. Khi VM được gán IP Public, Viettel
+# gán IP public TRỰC TIẾP lên NIC chính → phải lọc lấy IP private, KHÔNG lấy public.
+# Đồng thời loại trừ IP monitor ($IP) để không nhầm sang NIC monitor.
+_is_private() {
+  case "$1" in
+    10.*|192.168.*) return 0 ;;
+    172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+PRIMARY_IFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -1)
+IP_LOCAL=""
+# Ưu tiên IP private trên NIC chính (interface có default route)
+for _ip in $(ip -4 -o addr show "$PRIMARY_IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
+  [ "$_ip" = "$IP" ] && continue
+  if _is_private "$_ip"; then IP_LOCAL="$_ip"; break; fi
+done
+# Fallback: quét mọi interface global, lấy IP private đầu tiên khác IP monitor
+if [ -z "$IP_LOCAL" ]; then
+  for _ip in $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
+    [ "$_ip" = "$IP" ] && continue
+    if _is_private "$_ip"; then IP_LOCAL="$_ip"; break; fi
+  done
+fi
+
+log() { echo "[teleport-setup] $*"; }
+err() { echo "[teleport-setup] ERROR: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# 1. Region config
+# ---------------------------------------------------------------------------
+case "$TELEPORT_REGION" in
+  vn-central-1)
+    AUTH_SERVER="public.teleport.gpdn.net:443"
+    HOSTS_IP="10.129.0.232"
+    HOSTS_HOSTNAME="public.teleport.gpdn.net"
+    ;;
+  vn-north-1)
+    AUTH_SERVER="vpublic.teleport.gpdn.net:443"
+    HOSTS_IP="10.129.24.54"
+    HOSTS_HOSTNAME="vpublic.teleport.gpdn.net"
+    HOSTS_STALE_IP="10.129.8.35"   # IP cũ trỏ cùng hostname — xóa nếu image có sẵn
+    ;;
+  *)
+    err "Unknown region: '$TELEPORT_REGION'. Expected: vn-central-1 | vn-north-1"
+    ;;
+esac
+
+log "Region  : $TELEPORT_REGION"
+log "Auth    : $AUTH_SERVER"
+log "System  : $SYSTEM"
+log "Node    : $HOSTNAME_NODE"
+log "IP      : $IP"
+[ -n "$IP_LOCAL" ] && log "IP local: $IP_LOCAL"
+
+# ---------------------------------------------------------------------------
+# 2. Install Teleport nếu chưa có
+# ---------------------------------------------------------------------------
+if command -v teleport >/dev/null 2>&1; then
+  INSTALLED_VER=$(teleport version 2>/dev/null | awk '{print $2}' | tr -d 'v' | head -1)
+  if [ "$INSTALLED_VER" = "$TELEPORT_VERSION" ]; then
+    log "Teleport $TELEPORT_VERSION already installed — skip download."
+  else
+    log "Teleport installed but version mismatch ($INSTALLED_VER != $TELEPORT_VERSION) — reinstalling."
+    _DO_INSTALL=1
+  fi
+else
+  log "Teleport not found — installing version $TELEPORT_VERSION."
+  _DO_INSTALL=1
+fi
+
+if [ "$${_DO_INSTALL:-0}" = "1" ]; then
+  DEB="teleport_$${TELEPORT_VERSION}_amd64.deb"
+  URL="https://cdn.teleport.dev/$DEB"
+  TMP="/tmp/$DEB"
+
+  log "Downloading $URL ..."
+  wget -q --show-progress -O "$TMP" "$URL" || err "Download failed: $URL"
+
+  log "Installing $DEB ..."
+  dpkg -i "$TMP" || err "dpkg install failed"
+  rm -f "$TMP"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Build labels
+# ---------------------------------------------------------------------------
+LABELS="env=pro,system=$${SYSTEM},type=server,ip=$${IP}"
+if [ -n "$IP_LOCAL" ]; then
+  LABELS="$${LABELS},ip_local=$${IP_LOCAL}"
+fi
+
+NODE_NAME="$${SYSTEM}_$${HOSTNAME_NODE}_$${IP}"
+
+log "Node name : $NODE_NAME"
+log "Labels    : $LABELS"
+
+# ---------------------------------------------------------------------------
+# 4. Ghi systemd service
+# ---------------------------------------------------------------------------
+SERVICE_FILE="/lib/systemd/system/teleport.service"
+
+cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Teleport SSH Service
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5s
+StartLimitIntervalSec=0
+EnvironmentFile=-/etc/default/teleport
+ExecStart=/usr/local/bin/teleport start \
+  --pid-file=/run/teleport.pid \
+  --roles=node \
+  --token=$${TELEPORT_TOKEN} \
+  --auth-server=$${AUTH_SERVER} \
+  --nodename=$${NODE_NAME} \
+  --labels=$${LABELS}
+ExecReload=/bin/kill -HUP \$MAINPID
+PIDFile=/run/teleport.pid
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+chmod 751 "$SERVICE_FILE"
+[ -f "$SERVICE_FILE" ] || err "Service file not created: $SERVICE_FILE"
+log "Service file written: $SERVICE_FILE"
+
+# ---------------------------------------------------------------------------
+# 5. /etc/hosts — xóa entry IP cũ (nếu có) rồi thêm entry đúng nếu chưa có
+# ---------------------------------------------------------------------------
+HOSTS_ENTRY="$HOSTS_IP   $HOSTS_HOSTNAME"
+
+# Region north đôi khi có sẵn dòng IP cũ trỏ cùng hostname → phải xóa trước,
+# nếu không check "đã có hostname" bên dưới sẽ bỏ qua và giữ lại IP sai.
+if [ -n "$${HOSTS_STALE_IP:-}" ] && grep -qE "^$${HOSTS_STALE_IP}[[:space:]]+$HOSTS_HOSTNAME([[:space:]]|$)" /etc/hosts; then
+  sed -i -E "\#^$${HOSTS_STALE_IP}[[:space:]]+$HOSTS_HOSTNAME([[:space:]]|$)#d" /etc/hosts
+  log "Removed stale /etc/hosts entry: $${HOSTS_STALE_IP} $HOSTS_HOSTNAME"
+fi
+
+if grep -q "$HOSTS_HOSTNAME" /etc/hosts; then
+  log "/etc/hosts already has $HOSTS_HOSTNAME — skip."
+else
+  echo "$HOSTS_ENTRY" >> /etc/hosts
+  log "Added to /etc/hosts: $HOSTS_ENTRY"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Xóa data cũ (tránh conflict node ID nếu image clone)
+#    Chỉ áp dụng cho vn-central-1 — north không cần vì image sạch.
+# ---------------------------------------------------------------------------
+systemctl stop teleport 2>/dev/null || true
+rm -rf /var/lib/teleport
+log "Cleared /var/lib/teleport"
+
+# ---------------------------------------------------------------------------
+# 7. Start + enable service
+# ---------------------------------------------------------------------------
+systemctl daemon-reload
+systemctl restart teleport
+sleep 3
+systemctl enable teleport
+
+if systemctl is-active --quiet teleport; then
+  log "Teleport agent running successfully."
+else
+  systemctl status teleport --no-pager >&2
+  err "Teleport agent failed to start!"
+fi

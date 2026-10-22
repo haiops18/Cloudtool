@@ -1,0 +1,406 @@
+#cloud-config
+# CloudTool Ubuntu template
+#
+# Supported CloudTool variables:
+#   {{server_name}}, {{private_ip}}, {{TP_REGION}}, {{TP_SYSTEM}},
+#   {{TP_HOSTNAME}}, {{TP_MONITOR_IP}}, {{TELEPORT_ENABLE}},
+#   {{data_volumes_shell}}
+# Variables: {{TELEPORT_ENABLE}}, {{TP_MONITOR_IP}}, {{local_gateway}}, {{vpc_cidr}}
+#
+# data_volumes_shell rows are: mount_as,volume_type,size_gb,mount_path
+# The script intentionally never formats a disk. Format volumes before use.
+
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - util-linux
+  - cloud-guest-utils
+  - netplan.io
+
+write_files:
+  - path: /usr/local/sbin/cloudtool-mount-volumes.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      rows='{{data_volumes_shell}}'
+      root_source=$(findmnt -n -o SOURCE /)
+      root_disk=$(lsblk -ndo PKNAME "$root_source" 2>/dev/null || true)
+      [ -n "$root_disk" ] || root_disk=$(basename "$root_source" | sed 's/[0-9]*$//')
+      mapfile -t disks < <(
+        lsblk -dnpo NAME,TYPE | awk '$2=="disk" {print $1}' | while read -r candidate; do
+          [ "$(basename "$candidate")" = "$root_disk" ] && continue
+          lsblk -nrpo MOUNTPOINT "$candidate" | grep -q . && continue
+          printf '%s\n' "$candidate"
+        done
+      )
+      index=0
+      while IFS=, read -r mount_as disk_type size mount_path; do
+        [ -z "${mount_path:-}" ] && continue
+        device="${disks[$index]:-}"
+        [ -n "$device" ] || { echo "No unmounted disk for $mount_path" >&2; exit 1; }
+        mkdir -p "$mount_path"
+        uuid=$(blkid -s UUID -o value "$device" 2>/dev/null || true)
+        if [ -z "$uuid" ]; then
+          # A newly-created Cloud volume is normally blank. Format only when
+          # wipefs confirms that it has no existing partition/filesystem
+          # signature; never overwrite a disk that already contains data.
+          if wipefs -n "$device" 2>/dev/null | grep -q .; then
+            echo "Disk $device has an existing signature but no UUID; refusing to format it" >&2
+            exit 1
+          fi
+          echo "Formatting blank disk $device as ext4"
+          mkfs.ext4 -F "$device"
+          uuid=$(blkid -s UUID -o value "$device" 2>/dev/null || true)
+        fi
+        [ -n "$uuid" ] || { echo "Unable to obtain UUID for $device" >&2; exit 1; }
+        awk -v target="$mount_path" 'NF < 2 || $1 ~ /^#/ || $2 != target {print}' /etc/fstab > /etc/fstab.cloudtool
+        mv /etc/fstab.cloudtool /etc/fstab
+        echo "UUID=$uuid $mount_path auto defaults,nofail 0 2" >> /etc/fstab
+        mount "$mount_path" 2>/dev/null || mount "$device" "$mount_path"
+        echo "Mounted $device ($disk_type ${size}GB) at $mount_path"
+        index=$((index + 1))
+      done < <(printf '%b\n' "$rows")
+      mount -a
+
+  - path: /usr/local/sbin/cloudtool-static-ip.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      LOG_DIR=/var/log/cloudtool
+      LOG_FILE="$LOG_DIR/static-ip.log"
+      mkdir -p "$LOG_DIR"
+      chmod 0750 "$LOG_DIR"
+      # FD 3 is reserved for diagnostics. It must not use stdout because
+      # stdout is also used by command substitutions while discovering NICs.
+      exec 3>> "$LOG_FILE"
+      # Keep normal command output in the same durable per-script log.
+      exec >> "$LOG_FILE" 2>&1
+      timestamp() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+      log() { printf '%s [static-ip] %s\n' "$(timestamp)" "$*" >&3; }
+      trap 'status=$?; log "ERROR line=${LINENO} exit=${status}"; exit "$status"' ERR
+
+      TELEPORT_ENABLED='{{TELEPORT_ENABLE}}'
+      MONITOR_IP='{{TP_MONITOR_IP}}'
+      LOCAL_GATEWAY='{{local_gateway}}'
+      VPC_CIDR='{{vpc_cidr}}'
+      # Optional fallback only. The gateway is normally discovered from the
+      # current default route on the Elastic (171.x) NIC before netplan is
+      # rewritten, so this can safely remain blank.
+      ELASTIC_GATEWAY=''
+      MONITOR_PREFIX=21
+      NETPLAN_FILE=/etc/netplan/50-cloud-init.yaml
+      NETPLAN_DIR=/etc/netplan
+      BACKUP_ROOT=/var/backups/cloudtool/netplan
+
+      log "START teleport_enabled=${TELEPORT_ENABLED} monitor_ip=${MONITOR_IP:-none} local_gateway=${LOCAL_GATEWAY:-none} vpc_cidr=${VPC_CIDR:-none}"
+
+      # 1) Discover cards and their IPv4 addresses.
+      interfaces() {
+        for path in /sys/class/net/eth* /sys/class/net/ens*; do
+          [ -e "$path" ] && printf '%s\n' "${path##*/}"
+        done
+      }
+      ip_addresses() {
+        # A NIC can disappear/appear while cloud-init is polling. Treat this
+        # as no addresses yet; do not let an ip error enter a substitution.
+        ip -o -4 addr show dev "$1" scope global 2>/dev/null | awk '{print $4}' || true
+      }
+      ip_only() { printf '%s' "$1" | cut -d/ -f1; }
+      is_elastic() { [[ "$1" == 171.* ]]; }
+      is_monitor() { [[ "$1" == 10.129.* ]]; }
+      is_ipv4() {
+        [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+        local octet
+        local -a octets
+        IFS=. read -r -a octets <<< "$1"
+        for octet in "${octets[@]}"; do
+          [ "$octet" -ge 0 ] && [ "$octet" -le 255 ] || return 1
+        done
+      }
+
+      # 2) Classify every card as elastic, monitor, local, or empty. This is
+      # repeated while waiting because Cloud NICs may appear after cloud-init.
+      declare -A CARD_IPS CARD_TYPE CARD_GATEWAY
+      elastic_iface=''
+      local_iface=''
+      monitor_iface=''
+
+      classify_interfaces() {
+        CARD_IPS=(); CARD_TYPE=(); CARD_GATEWAY=()
+        elastic_iface=''; local_iface=''; monitor_iface=''
+        for iface in $(interfaces); do
+          CARD_IPS[$iface]=$(ip_addresses "$iface")
+          type=empty
+          while IFS= read -r cidr; do
+            [ -n "$cidr" ] || continue
+            ipaddr=$(ip_only "$cidr")
+            if is_elastic "$ipaddr"; then
+              type=elastic; elastic_iface="$iface"
+            elif is_monitor "$ipaddr" && [ "$type" != elastic ]; then
+              type=monitor; monitor_iface="${monitor_iface:-$iface}"
+            elif [ "$type" = empty ]; then
+              type=local; local_iface="${local_iface:-$iface}"
+            fi
+          done <<< "${CARD_IPS[$iface]}"
+          CARD_TYPE[$iface]=$type
+          CARD_GATEWAY[$iface]=$(ip -4 route show default dev "$iface" 2>/dev/null | awk '/default/ {print $3; exit}' || true)
+        done
+      }
+
+      # Wait for the default route and, when enabled, the Monitor NIC/IP.
+      for attempt in $(seq 1 90); do
+        classify_interfaces
+        default_iface=$(ip -o -4 route show to default | awk '{print $5; exit}')
+        default_gateway=$(ip -4 route show default | awk '/default/ {print $3; exit}')
+        monitor_ready=true
+        if [ "$TELEPORT_ENABLED" = true ] && is_monitor "$MONITOR_IP"; then
+          monitor_ready=false
+          [ -n "$monitor_iface" ] && ip_addresses "$monitor_iface" | grep -Fq "$MONITOR_IP/" \
+            && monitor_ready=true
+        fi
+        [ -n "$default_iface" ] && [ -n "$default_gateway" ] && [ "$monitor_ready" = true ] && break
+        if [ "$attempt" -eq 1 ] || [ $((attempt % 10)) -eq 0 ]; then
+          log "WAIT attempt=${attempt}/90 default_iface=${default_iface:-none} default_gateway=${default_gateway:-none} elastic=${elastic_iface:-none} local=${local_iface:-none} monitor=${monitor_iface:-none} monitor_ready=${monitor_ready}"
+        fi
+        sleep 2
+      done
+      [ -n "${default_iface:-}" ] && [ -n "${default_gateway:-}" ] || exit 1
+      [ "${monitor_ready:-true}" = true ] || {
+        echo "Teleport monitor NIC/IP is not ready yet" >&2
+        exit 1
+      }
+      log "NIC_READY default=${default_iface}/${default_gateway} elastic=${elastic_iface:-none} local=${local_iface:-none} monitor=${monitor_iface:-none}"
+      for iface in $(interfaces); do
+        log "NIC iface=${iface} type=${CARD_TYPE[$iface]:-empty} ips=$(printf '%s' "${CARD_IPS[$iface]:-none}" | tr '\n' ',')"
+      done
+
+      primary_iface="${elastic_iface:-${local_iface:-$default_iface}}"
+      primary_address=$(printf '%s\n' "${CARD_IPS[$primary_iface]:-}" | head -n 1)
+      [ -n "$primary_address" ] || { echo "Primary card has no IPv4" >&2; exit 1; }
+      # Derive the Elastic gateway from the route already supplied to the
+      # Elastic NIC. This happens before netplan files are removed. A manually
+      # entered ELASTIC_GATEWAY is only a last-resort fallback when valid.
+      if [ "$primary_iface" = "$elastic_iface" ]; then
+        discovered_elastic_gateway="${CARD_GATEWAY[$elastic_iface]:-}"
+        if ! is_ipv4 "$discovered_elastic_gateway" \
+          && [ "$default_iface" = "$elastic_iface" ]; then
+          discovered_elastic_gateway="$default_gateway"
+        fi
+        if is_ipv4 "$discovered_elastic_gateway"; then
+          ELASTIC_GATEWAY="$discovered_elastic_gateway"
+          log "ELASTIC_GATEWAY source=nic-route value=${ELASTIC_GATEWAY}"
+        elif is_ipv4 "$ELASTIC_GATEWAY"; then
+          log "ELASTIC_GATEWAY source=optional-fallback value=${ELASTIC_GATEWAY}"
+        else
+          echo "Elastic gateway could not be discovered from $elastic_iface" >&2
+          exit 1
+        fi
+        primary_gateway="$ELASTIC_GATEWAY"
+      else
+        primary_gateway="${LOCAL_GATEWAY:-${CARD_GATEWAY[$primary_iface]:-$default_gateway}}"
+      fi
+      [ -n "$primary_gateway" ] || { echo "Primary gateway is unavailable" >&2; exit 1; }
+      log "ROUTING primary=${primary_iface} address=${primary_address} gateway=${primary_gateway} elastic_gateway=${ELASTIC_GATEWAY}"
+
+      # 3) Resolve the monitor card after the wait loop.
+      if [ "$TELEPORT_ENABLED" = true ] && is_monitor "$MONITOR_IP"; then
+        for iface in $(interfaces); do
+          if ip_addresses "$iface" | grep -Fq "$MONITOR_IP/"; then
+            monitor_iface="$iface"
+            break
+          fi
+        done
+        monitor_iface="${monitor_iface:-$primary_iface}"
+      else
+        monitor_iface=''
+      fi
+
+      # 4) Back up the current netplan directory, then replace old YAML files.
+      # The backup is retained for rollback/debugging and is never overwritten.
+      mkdir -p "$NETPLAN_DIR"
+      mkdir -p "$BACKUP_ROOT"
+      backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+      cp -a "$NETPLAN_DIR" "$backup_dir"
+      find "$NETPLAN_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) -delete
+      log "NETPLAN_BACKUP path=${backup_dir}"
+
+      # 5) Render three independent netplan blocks. A block is written only
+      # when its IP type/NIC exists, making the generated YAML easy to inspect.
+      cat > "$NETPLAN_FILE" <<EOF
+      network:
+        version: 2
+        ethernets:
+      EOF
+
+      # Elastic IP (171.x): fixed Internet default route.
+      if [ -n "$elastic_iface" ]; then
+        elastic_address=$(printf '%s\n' "${CARD_IPS[$elastic_iface]}" | head -n 1)
+        cat >> "$NETPLAN_FILE" <<EOF
+          $elastic_iface:
+            dhcp4: false
+            addresses:
+              - $elastic_address
+            routes:
+              - to: 0.0.0.0/0
+                via: $ELASTIC_GATEWAY
+            nameservers:
+              addresses: [8.8.8.8, 1.1.1.1]
+      EOF
+      fi
+
+      # Local Private IP (not 171.x or 10.129.x): without Elastic IP, this
+      # NIC owns the default route. With Elastic IP, it only routes VPC traffic.
+      if [ -n "$local_iface" ]; then
+        local_address=$(printf '%s\n' "${CARD_IPS[$local_iface]}" | head -n 1)
+        cat >> "$NETPLAN_FILE" <<EOF
+          $local_iface:
+            dhcp4: false
+            addresses:
+              - $local_address
+            routes:
+      EOF
+        if [ -z "$elastic_iface" ]; then
+          cat >> "$NETPLAN_FILE" <<EOF
+              - to: 0.0.0.0/0
+                via: $LOCAL_GATEWAY
+      EOF
+        elif [ -n "$VPC_CIDR" ] && [ -n "$LOCAL_GATEWAY" ]; then
+          cat >> "$NETPLAN_FILE" <<EOF
+              - to: $VPC_CIDR
+                via: $LOCAL_GATEWAY
+      EOF
+        fi
+        # DNS belongs only to the NIC that owns the default route.
+        if [ -z "$elastic_iface" ]; then
+          cat >> "$NETPLAN_FILE" <<EOF
+            nameservers:
+              addresses: [8.8.8.8, 1.1.1.1]
+      EOF
+        fi
+      fi
+
+      # Teleport/Monitor IP (10.129.x): address only; never add a route.
+      if [ -n "$monitor_iface" ] && [ "$monitor_iface" != "$elastic_iface" ] \
+        && [ "$monitor_iface" != "$local_iface" ]; then
+        monitor_address=$(printf '%s\n' "${CARD_IPS[$monitor_iface]}" | head -n 1)
+        [ -n "$monitor_address" ] || monitor_address="$MONITOR_IP/$MONITOR_PREFIX"
+        cat >> "$NETPLAN_FILE" <<EOF
+          $monitor_iface:
+            dhcp4: false
+            addresses:
+              - $monitor_address
+      EOF
+      fi
+
+      chmod 600 "$NETPLAN_FILE"
+      log "NETPLAN_RENDERED file=${NETPLAN_FILE}"
+      sed 's/^/NETPLAN | /' "$NETPLAN_FILE"
+      log "NETPLAN_GENERATE"
+      netplan generate
+      for attempt in $(seq 1 30); do
+        log "NETPLAN_APPLY attempt=${attempt}/30"
+        if netplan apply; then
+          sleep 2
+          log "VERIFY addresses"
+          ip -o -4 addr show scope global | sed 's/^/IP | /'
+          log "VERIFY routes"
+          ip -4 route show | sed 's/^/ROUTE | /'
+          log "VERIFY netplan"
+          netplan get | sed 's/^/NETPLAN_GET | /'
+
+          # Verify the intended ownership of the default/VPC routes before
+          # reporting success to cloud-init.
+          if [ -n "$elastic_iface" ]; then
+            ip -4 route show default | grep -Fq "via $ELASTIC_GATEWAY" || {
+              log "VERIFY_FAILED missing Elastic default route via $ELASTIC_GATEWAY"
+              sleep 2
+              continue
+            }
+            if [ -n "$local_iface" ] && [ -n "$VPC_CIDR" ]; then
+              ip -4 route show "$VPC_CIDR" | grep -Fq "via $LOCAL_GATEWAY" || {
+                log "VERIFY_FAILED missing Local VPC route ${VPC_CIDR} via ${LOCAL_GATEWAY}"
+                sleep 2
+                continue
+              }
+            fi
+          elif [ -n "$local_iface" ]; then
+            ip -4 route show default | grep -Fq "via $LOCAL_GATEWAY" || {
+              log "VERIFY_FAILED missing Local default route via $LOCAL_GATEWAY"
+              sleep 2
+              continue
+            }
+          fi
+          if [ -n "$monitor_iface" ] && [ "$TELEPORT_ENABLED" = true ]; then
+            ip_addresses "$monitor_iface" | grep -Fq "$MONITOR_IP/" || {
+              log "VERIFY_FAILED monitor IP ${MONITOR_IP} is absent from ${monitor_iface}"
+              sleep 2
+              continue
+            }
+          fi
+          log "SUCCESS static network configuration verified"
+          exit 0
+        fi
+        log "NETPLAN_APPLY_FAILED attempt=${attempt}/30"
+        sleep 2
+      done
+      echo "netplan apply failed after retries" >&2
+      exit 1
+
+  - path: /usr/local/sbin/cloudtool-teleport.sh
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      [ '{{TELEPORT_ENABLE}}' = 'true' ] || exit 0
+      # Fill this value manually before deploying. It is deliberately not
+      # read from a CloudTool/project variable.
+      token='f7adb7ccdf04037bcd2b554hjn343lk52ec6010fd6f0caec94ba190b765'
+      [ -n "$token" ] || { echo 'TP_JOIN_TOKEN is required when Teleport is enabled' >&2; exit 1; }
+      region='{{TP_REGION}}'
+      case "$region" in
+        public) version='13.4.14'; auth='public.teleport.gpdn.net:443'; host_ip='10.129.0.232'; host_name='public.teleport.gpdn.net' ;;
+        vpublic) version='16.4.11'; auth='vpublic.teleport.gpdn.net:443'; host_ip='10.129.24.54'; host_name='vpublic.teleport.gpdn.net' ;;
+        *) echo "Unsupported TP_REGION: $region" >&2; exit 1 ;;
+      esac
+      installed_version=$(dpkg-query -W -f='${Version}' teleport 2>/dev/null || true)
+      installed_version=${installed_version%%-*}
+      if [ "$installed_version" != "$version" ]; then
+        curl -fsSL -o /tmp/teleport.deb "https://cdn.teleport.dev/teleport_${version}_amd64.deb"
+        dpkg -i /tmp/teleport.deb
+        rm -f /tmp/teleport.deb
+      fi
+      # Remove both region aliases and their fixed addresses before adding the
+      # selected one. This prevents stale public/vpublic mappings from
+      # shadowing the region currently being configured.
+      sed -i -E '/(^|[[:space:]])(public|vpublic)\.teleport\.gpdn\.net([[:space:]]|$)/d; /^(10\.129\.0\.232|10\.129\.24\.54)[[:space:]]/d' /etc/hosts
+      printf '%s %s\n' "$host_ip" "$host_name" >> /etc/hosts
+      systemctl stop teleport 2>/dev/null || true
+      rm -rf /var/lib/teleport
+      cat > /etc/systemd/system/teleport.service <<EOF
+      [Unit]
+      Description=CloudTool Teleport node
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      ExecStart=/usr/local/bin/teleport start --pid-file=/run/teleport.pid --roles=node --token=$token --auth-server=$auth --nodename={{TP_SYSTEM}}_{{TP_HOSTNAME}} --labels=system={{TP_SYSTEM}},ip={{TP_MONITOR_IP}}
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      systemctl daemon-reload
+      systemctl enable --now teleport
+
+runcmd:
+  # Every command has its own shell and log file. Each shell records its own
+  # outcome and exits zero, so Cloud-init always continues to the next script.
+  - [bash, -c, 'mkdir -p /var/log/cloudtool; if /usr/local/sbin/cloudtool-mount-volumes.sh >> /var/log/cloudtool/mount-volumes.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s mount-volumes\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']
+  # NIC attachment can finish after cloud-init starts. Static-IP also waits
+  # and rechecks NICs internally for up to 180 seconds.
+  - [bash, -c, 'sleep 30; if /usr/local/sbin/cloudtool-static-ip.sh >> /var/log/cloudtool/static-ip.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s static-ip\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']
+  - [bash, -c, 'if /usr/local/sbin/cloudtool-teleport.sh >> /var/log/cloudtool/teleport.log 2>&1; then state=SUCCESS; else state=FAILED; fi; printf "%s %s teleport\n" "$(date -u +%FT%TZ)" "$state" >> /var/log/cloudtool/bootstrap.log; exit 0']

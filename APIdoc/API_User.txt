@@ -1,0 +1,24 @@
+- Authorization: Token xxxxxxxxxxxx
+	(Với xxxxxxxxxxxx là chuỗi tocken mà người dùng có)
+- project-id: yyyyyyyyyyy
+	(Với yyyyyyyyyyy là project id mà người dùng đang chọn, và luôn truyền với mọi API)
+
+==== API get current user ====
+
+- method: GET
+- api_link: https://console.viettelcloud.vn/legacy/api/tenant/users/current-user/
+- response:
+{
+    "id": "28ceab54-71ad-4897-9900-345345345345",
+    "display_name": "user_test",
+    "username": "user_test",
+    "first_name": "Test",
+    "last_name": "User",
+    "email": "user_test@gmail.com",
+    "bypass_billing": false,
+    "max_projects": 50,
+    "remaining_projects": 42,
+    "time_zone": "Asia/Ho_Chi_Minh",
+    "locale": "vi"
+}
+- status code: 200 OK
